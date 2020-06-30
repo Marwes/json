@@ -18,6 +18,39 @@ pub use crate::read::{Read, SliceRead, StrRead};
 #[cfg(feature = "std")]
 pub use crate::read::IoRead;
 
+#[cfg(not(feature = "unbounded_depth"))]
+macro_rules! if_checking_recursion_limit {
+    ($($body:tt)*) => {
+        $($body)*
+    };
+}
+
+#[cfg(feature = "unbounded_depth")]
+macro_rules! if_checking_recursion_limit {
+    ($this:ident $($body:tt)*) => {
+        if !$this.disable_recursion_limit {
+            $this $($body)*
+        }
+    };
+}
+
+macro_rules! check_recursion {
+    ($this:ident $($body:tt)*) => {
+        if_checking_recursion_limit! {
+            $this.remaining_depth -= 1;
+            if $this.remaining_depth == 0 {
+                return Err($this.peek_error(ErrorCode::RecursionLimitExceeded));
+            }
+        }
+
+        $this $($body)*
+
+        if_checking_recursion_limit! {
+            $this.remaining_depth += 1;
+        }
+    };
+}
+
 //////////////////////////////////////////////////////////////////////////////
 
 /// A structure that deserializes JSON into Rust values.
@@ -1201,6 +1234,41 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         self.ignore_value()?;
         self.read.end_raw_buffering(visitor)
     }
+
+    fn deserialize_struct(&mut self, visitor: &mut dyn JsonVisitor<'de, R>) -> Result<()> {
+        let peek = tri!(self.parse_whitespace_in_value());
+
+        let value = match peek {
+            b'[' => {
+                check_recursion! {
+                    self.eat_char();
+                    let ret = visitor.visit_seq(SeqAccess::new(self));
+                }
+
+                match (ret, self.end_seq()) {
+                    (Ok(ret), Ok(())) => Ok(ret),
+                    (Err(err), _) | (_, Err(err)) => Err(err),
+                }
+            }
+            b'{' => {
+                check_recursion! {
+                    self.eat_char();
+                    let ret = visitor.visit_map(MapAccess::new(self));
+                }
+
+                match (ret, self.end_map()) {
+                    (Ok(ret), Ok(())) => Ok(ret),
+                    (Err(err), _) | (_, Err(err)) => Err(err),
+                }
+            }
+            _ => Err(visitor.peek_invalid_type(self)),
+        };
+
+        match value {
+            Ok(value) => Ok(value),
+            Err(err) => Err(self.fix_position(err)),
+        }
+    }
 }
 
 impl FromStr for Number {
@@ -1255,39 +1323,6 @@ macro_rules! deserialize_number {
             V: de::Visitor<'de>,
         {
             self.deserialize_number(visitor)
-        }
-    };
-}
-
-#[cfg(not(feature = "unbounded_depth"))]
-macro_rules! if_checking_recursion_limit {
-    ($($body:tt)*) => {
-        $($body)*
-    };
-}
-
-#[cfg(feature = "unbounded_depth")]
-macro_rules! if_checking_recursion_limit {
-    ($this:ident $($body:tt)*) => {
-        if !$this.disable_recursion_limit {
-            $this $($body)*
-        }
-    };
-}
-
-macro_rules! check_recursion {
-    ($this:ident $($body:tt)*) => {
-        if_checking_recursion_limit! {
-            $this.remaining_depth -= 1;
-            if $this.remaining_depth == 0 {
-                return Err($this.peek_error(ErrorCode::RecursionLimitExceeded));
-            }
-        }
-
-        $this $($body)*
-
-        if_checking_recursion_limit! {
-            $this.remaining_depth += 1;
         }
     };
 }
@@ -1759,38 +1794,9 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
     where
         V: de::Visitor<'de>,
     {
-        let peek = tri!(self.parse_whitespace_in_value());
-
-        let value = match peek {
-            b'[' => {
-                check_recursion! {
-                    self.eat_char();
-                    let ret = visitor.visit_seq(SeqAccess::new(self));
-                }
-
-                match (ret, self.end_seq()) {
-                    (Ok(ret), Ok(())) => Ok(ret),
-                    (Err(err), _) | (_, Err(err)) => Err(err),
-                }
-            }
-            b'{' => {
-                check_recursion! {
-                    self.eat_char();
-                    let ret = visitor.visit_map(MapAccess::new(self));
-                }
-
-                match (ret, self.end_map()) {
-                    (Ok(ret), Ok(())) => Ok(ret),
-                    (Err(err), _) | (_, Err(err)) => Err(err),
-                }
-            }
-            _ => Err(self.peek_invalid_type(&visitor)),
-        };
-
-        match value {
-            Ok(value) => Ok(value),
-            Err(err) => Err(self.fix_position(err)),
-        }
+        let mut visitor = DynVisitor::Visitor(visitor);
+        tri!(self.deserialize_struct(&mut visitor));
+        Ok(visitor.take_value())
     }
 
     /// Parses an enum as an object like `{"$KEY":$VALUE}`, where $VALUE is either a straight
@@ -2539,4 +2545,82 @@ where
     T: de::Deserialize<'a>,
 {
     from_trait(read::StrRead::new(s))
+}
+
+trait JsonVisitor<'de, R> {
+    fn visit_some(&mut self, deserializer: &mut Deserializer<R>) -> std::result::Result<(), Error>;
+
+    fn visit_newtype_struct(
+        &mut self,
+        deserializer: &mut Deserializer<R>,
+    ) -> std::result::Result<(), Error>;
+
+    fn visit_seq(&mut self, seq: SeqAccess<R>) -> std::result::Result<(), Error>;
+
+    fn visit_map(&mut self, map: MapAccess<R>) -> std::result::Result<(), Error>;
+
+    fn visit_enum(&mut self, data: VariantAccess<R>) -> std::result::Result<(), Error>;
+
+    fn peek_invalid_type(&self, deserializer: &mut Deserializer<R>) -> Error;
+}
+
+enum DynVisitor<T, U> {
+    Visitor(T),
+    Value(U),
+    Empty,
+}
+impl<T, U> DynVisitor<T, U> {
+    fn take_visitor(&mut self) -> T {
+        match mem::replace(self, DynVisitor::Empty) {
+            DynVisitor::Visitor(visitor) => visitor,
+            _ => unreachable!(),
+        }
+    }
+    fn take_value(&mut self) -> U {
+        match mem::replace(self, DynVisitor::Empty) {
+            DynVisitor::Value(value) => value,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl<'de, V, R> JsonVisitor<'de, R> for DynVisitor<V, V::Value>
+where
+    V: de::Visitor<'de>,
+    R: Read<'de>,
+{
+    fn visit_some(&mut self, deserializer: &mut Deserializer<R>) -> std::result::Result<(), Error> {
+        *self = DynVisitor::Value(tri!(self.take_visitor().visit_some(deserializer)));
+        Ok(())
+    }
+
+    fn visit_newtype_struct(
+        &mut self,
+        deserializer: &mut Deserializer<R>,
+    ) -> std::result::Result<(), Error> {
+        *self = DynVisitor::Value(tri!(self.take_visitor().visit_newtype_struct(deserializer)));
+        Ok(())
+    }
+
+    fn visit_seq(&mut self, seq: SeqAccess<R>) -> std::result::Result<(), Error> {
+        *self = DynVisitor::Value(tri!(self.take_visitor().visit_seq(seq)));
+        Ok(())
+    }
+
+    fn visit_map(&mut self, map: MapAccess<R>) -> std::result::Result<(), Error> {
+        *self = DynVisitor::Value(tri!(self.take_visitor().visit_map(map)));
+        Ok(())
+    }
+
+    fn visit_enum(&mut self, data: VariantAccess<R>) -> std::result::Result<(), Error> {
+        *self = DynVisitor::Value(tri!(self.take_visitor().visit_enum(data)));
+        Ok(())
+    }
+
+    fn peek_invalid_type(&self, deserializer: &mut Deserializer<R>) -> Error {
+        match self {
+            DynVisitor::Visitor(visitor) => deserializer.peek_invalid_type(visitor),
+            _ => unreachable!(),
+        }
+    }
 }
