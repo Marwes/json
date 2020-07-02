@@ -220,6 +220,13 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         Ok(tri!(self.next_char()).unwrap_or(b'\x00'))
     }
 
+    fn next_char_or_error(&mut self) -> Result<u8> {
+        match tri!(self.read.next()) {
+            Some(next) => Ok(next),
+            None => Err(self.error(ErrorCode::EofWhileParsingValue)),
+        }
+    }
+
     /// Error caused by a byte from next_char().
     #[cold]
     fn error(&self, reason: ErrorCode) -> Error {
@@ -374,15 +381,9 @@ impl<'de, R: Read<'de>> Deserializer<R> {
 
     fn parse_ident(&mut self, ident: &[u8]) -> Result<()> {
         for expected in ident {
-            match tri!(self.next_char()) {
-                None => {
-                    return Err(self.error(ErrorCode::EofWhileParsingValue));
-                }
-                Some(next) => {
-                    if next != *expected {
-                        return Err(self.error(ErrorCode::ExpectedSomeIdent));
-                    }
-                }
+            let next = tri!(self.next_char_or_error());
+            if next != *expected {
+                return Err(self.error(ErrorCode::ExpectedSomeIdent));
             }
         }
 
@@ -390,12 +391,7 @@ impl<'de, R: Read<'de>> Deserializer<R> {
     }
 
     fn parse_integer(&mut self, positive: bool) -> Result<ParserNumber> {
-        let next = match tri!(self.next_char()) {
-            Some(b) => b,
-            None => {
-                return Err(self.error(ErrorCode::EofWhileParsingValue));
-            }
-        };
+        let next = tri!(self.next_char_or_error());
 
         match next {
             b'0' => {
@@ -511,12 +507,7 @@ impl<'de, R: Read<'de>> Deserializer<R> {
             _ => true,
         };
 
-        let next = match tri!(self.next_char()) {
-            Some(b) => b,
-            None => {
-                return Err(self.error(ErrorCode::EofWhileParsingValue));
-            }
-        };
+        let next = tri!(self.next_char_or_error());
 
         // Make sure a digit follows the exponent place.
         let mut exp = match next {
@@ -703,12 +694,7 @@ impl<'de, R: Read<'de>> Deserializer<R> {
             _ => true,
         };
 
-        let next = match tri!(self.next_char()) {
-            Some(b) => b,
-            None => {
-                return Err(self.error(ErrorCode::EofWhileParsingValue));
-            }
-        };
+        let next = tri!(self.next_char_or_error());
 
         // Make sure a digit follows the exponent place.
         let mut exp = match next {
@@ -873,13 +859,9 @@ impl<'de, R: Read<'de>> Deserializer<R> {
 
     #[cfg(feature = "arbitrary_precision")]
     fn scan_or_eof(&mut self, buf: &mut String) -> Result<u8> {
-        match tri!(self.next_char()) {
-            Some(b) => {
-                buf.push(b as char);
-                Ok(b)
-            }
-            None => Err(self.error(ErrorCode::EofWhileParsingValue)),
-        }
+        let b = tri!(self.next_char_or_error());
+        buf.push(b as char);
+        Ok(b)
     }
 
     #[cfg(feature = "arbitrary_precision")]
