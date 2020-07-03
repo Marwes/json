@@ -442,6 +442,7 @@ macro_rules! tri {
 
 #[macro_use]
 mod macros;
+mod dyn_once;
 
 pub mod de;
 pub mod error;
@@ -454,7 +455,6 @@ pub mod value;
 
 mod features_check;
 
-mod dyn_once;
 mod io;
 #[cfg(feature = "std")]
 mod iter;

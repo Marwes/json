@@ -12,11 +12,14 @@ enum DynInner<T, U> {
 }
 
 impl<'a, T, U> DynOnce<'a, T, U> {
-    pub fn new(visitor: T) -> DynOnce<'a, T, U> {
-        DynOnce {
-            inner: DynInner::Visitor(visitor),
-            _marker: std::marker::PhantomData,
-        }
+    pub fn new(visitor: T) -> (DynOnce<'a, T, U>, Visitor<'a>) {
+        (
+            DynOnce {
+                inner: DynInner::Visitor(visitor),
+                _marker: std::marker::PhantomData,
+            },
+            Visitor(std::marker::PhantomData),
+        )
     }
 
     pub fn as_visitor<'b>(&'b self, _token: &'b Visitor<'a>) -> &'b T {
@@ -51,10 +54,13 @@ impl<'a, T, U> DynOnce<'a, T, U> {
 pub struct Value<'a>(std::marker::PhantomData<&'a mut ()>);
 pub struct Visitor<'a>(std::marker::PhantomData<&'a mut ()>);
 
-pub(crate) fn dyn_once<T, U, R>(
-    visitor: T,
-    action: impl for<'a> FnOnce(&mut DynOnce<'a, T, U>, Visitor<'a>) -> R,
-) -> R {
-    let mut once = DynOnce::new(visitor);
-    action(&mut once, Visitor(std::marker::PhantomData))
+// A macro is cheaper than a function
+#[macro_export]
+#[doc(hidden)]
+macro_rules! dyn_once {
+    ($visitor: expr, |$visitor_ident: ident, $token: ident| $expr: expr) => {{
+        let (mut once, $token) = DynOnce::new($visitor);
+        let $visitor_ident = &mut once;
+        $expr
+    }};
 }

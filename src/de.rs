@@ -18,7 +18,10 @@ pub use crate::read::{Read, SliceRead, StrRead};
 #[cfg(feature = "std")]
 pub use crate::read::IoRead;
 
-use crate::dyn_once::{dyn_once, DynOnce, Value, Visitor};
+use crate::{
+    dyn_once,
+    dyn_once::{DynOnce, Value, Visitor},
+};
 
 #[cfg(not(feature = "unbounded_depth"))]
 macro_rules! if_checking_recursion_limit {
@@ -1410,7 +1413,7 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
     where
         V: de::Visitor<'de>,
     {
-        dyn_once(visitor, |visitor, token| {
+        dyn_once!(visitor, |visitor, token| {
             let value = tri!(self.deserialize_any(visitor, token));
             Ok(visitor.take_value(value))
         })
@@ -1808,7 +1811,7 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
     where
         V: de::Visitor<'de>,
     {
-        dyn_once(visitor, |visitor, token| {
+        dyn_once!(visitor, |visitor, token| {
             let value = tri!(self.deserialize_struct(visitor, token));
             Ok(visitor.take_value(value))
         })
@@ -1938,7 +1941,7 @@ impl<'de, 'a, R: Read<'de> + 'a> de::SeqAccess<'de> for SeqAccess<'a, R> {
     where
         T: de::DeserializeSeed<'de>,
     {
-        dyn_once(seed, |seed, token| {
+        dyn_once!(seed, |seed, token| {
             match tri!(self.next_element_seed(seed, token)) {
                 None => Ok(None),
                 Some(value) => Ok(Some(seed.take_value(value))),
