@@ -1309,6 +1309,33 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         }
     }
 
+    fn deserialize_bool<'a>(
+        &mut self,
+        visitor: &mut dyn BoolVisitor<'de, 'a, R>,
+        token: Visitor<'a>,
+    ) -> Result<Value<'a>> {
+        let peek = tri!(self.parse_whitespace_in_value());
+
+        let value = match peek {
+            b't' => {
+                self.eat_char();
+                tri!(self.parse_ident(b"rue"));
+                visitor.visit_bool(token, true)
+            }
+            b'f' => {
+                self.eat_char();
+                tri!(self.parse_ident(b"alse"));
+                visitor.visit_bool(token, false)
+            }
+            _ => Err(self.peek_invalid_type(visitor.as_expected(&token))),
+        };
+
+        match value {
+            Ok(value) => Ok(value),
+            Err(err) => Err(self.fix_position(err)),
+        }
+    }
+
     fn deserialize_str_dyn<'a>(
         &mut self,
         visitor: &mut dyn StringVisitor<'de, 'a, R>,
@@ -1500,26 +1527,9 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
     where
         V: de::Visitor<'de>,
     {
-        let peek = tri!(self.parse_whitespace_in_value());
-
-        let value = match peek {
-            b't' => {
-                self.eat_char();
-                tri!(self.parse_ident(b"rue"));
-                visitor.visit_bool(true)
-            }
-            b'f' => {
-                self.eat_char();
-                tri!(self.parse_ident(b"alse"));
-                visitor.visit_bool(false)
-            }
-            _ => Err(self.peek_invalid_type(&visitor)),
-        };
-
-        match value {
-            Ok(value) => Ok(value),
-            Err(err) => Err(self.fix_position(err)),
-        }
+        dyn_once!(visitor, token);
+        let value = tri!(self.deserialize_bool(visitor, token));
+        Ok(visitor.take_value(value))
     }
 
     deserialize_number!(deserialize_i8);
@@ -2670,9 +2680,14 @@ trait StringVisitor<'de, 'a, R>: AsExpected<'de, 'a, R> {
     ) -> std::result::Result<Value<'a>, Error>;
 }
 
-trait AnyVisitor<'de, 'a, R>: StructVisitor<'de, 'a, R> + StringVisitor<'de, 'a, R> {
-    fn visit_unit(&mut self, token: Visitor<'a>) -> std::result::Result<Value<'a>, Error>;
+trait BoolVisitor<'de, 'a, R>: AsExpected<'de, 'a, R> {
     fn visit_bool(&mut self, token: Visitor<'a>, b: bool) -> std::result::Result<Value<'a>, Error>;
+}
+
+trait AnyVisitor<'de, 'a, R>:
+    StructVisitor<'de, 'a, R> + StringVisitor<'de, 'a, R> + BoolVisitor<'de, 'a, R>
+{
+    fn visit_unit(&mut self, token: Visitor<'a>) -> std::result::Result<Value<'a>, Error>;
     fn visit_number(
         &mut self,
         token: Visitor<'a>,
@@ -2737,6 +2752,16 @@ where
     }
 }
 
+impl<'de, 'a, V, R> BoolVisitor<'de, 'a, R> for DynOnce<'a, V, V::Value>
+where
+    V: de::Visitor<'de>,
+    R: Read<'de>,
+{
+    fn visit_bool(&mut self, token: Visitor<'a>, b: bool) -> std::result::Result<Value<'a>, Error> {
+        run_once!(token, self.visit_bool(b))
+    }
+}
+
 impl<'de, 'a, V, R> AnyVisitor<'de, 'a, R> for DynOnce<'a, V, V::Value>
 where
     V: de::Visitor<'de>,
@@ -2744,10 +2769,6 @@ where
 {
     fn visit_unit(&mut self, token: Visitor<'a>) -> std::result::Result<Value<'a>, Error> {
         run_once!(token, self.visit_unit())
-    }
-
-    fn visit_bool(&mut self, token: Visitor<'a>, b: bool) -> std::result::Result<Value<'a>, Error> {
-        run_once!(token, self.visit_bool(b))
     }
 
     fn visit_number(
