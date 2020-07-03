@@ -1322,7 +1322,7 @@ impl<'de, R: Read<'de>> Deserializer<R> {
                 self.scratch.clear();
                 visitor.visit_str(token, tri!(self.read.parse_str(&mut self.scratch)))
             }
-            _ => Err(visitor.peek_invalid_type(&token, self)),
+            _ => Err(self.peek_invalid_type(visitor.as_expected(&token))),
         };
 
         match value {
@@ -1350,7 +1350,7 @@ impl<'de, R: Read<'de>> Deserializer<R> {
                     (Err(err), _) | (_, Err(err)) => Err(err),
                 }
             }
-            _ => Err(visitor.peek_invalid_type(&token, self)),
+            _ => Err(self.peek_invalid_type(visitor.as_expected(&token))),
         };
 
         match value {
@@ -1378,7 +1378,7 @@ impl<'de, R: Read<'de>> Deserializer<R> {
                     (Err(err), _) | (_, Err(err)) => Err(err),
                 }
             }
-            _ => Err(visitor.peek_invalid_type(&token, self)),
+            _ => Err(self.peek_invalid_type(visitor.as_expected(&token))),
         };
 
         match value {
@@ -1417,7 +1417,7 @@ impl<'de, R: Read<'de>> Deserializer<R> {
                     (Err(err), _) | (_, Err(err)) => Err(err),
                 }
             }
-            _ => Err(visitor.peek_invalid_type(&token, self)),
+            _ => Err(self.peek_invalid_type(visitor.as_expected(&token))),
         };
 
         match value {
@@ -2635,11 +2635,11 @@ where
     from_trait(read::StrRead::new(s))
 }
 
-trait PeekInvalidType<'de, 'a, R> {
-    fn peek_invalid_type(&self, token: &Visitor<'a>, deserializer: &mut Deserializer<R>) -> Error;
+trait AsExpected<'de, 'a, R> {
+    fn as_expected<'b>(&'b self, token: &'b Visitor<'a>) -> &'b dyn Expected;
 }
 
-trait SeqVisitor<'de, 'a, R>: PeekInvalidType<'de, 'a, R> {
+trait SeqVisitor<'de, 'a, R>: AsExpected<'de, 'a, R> {
     fn visit_seq(
         &mut self,
         token: Visitor<'a>,
@@ -2662,7 +2662,7 @@ impl<'de, 'a, R, T> StructVisitor<'de, 'a, R> for T where
 {
 }
 
-trait StringVisitor<'de, 'a, R>: PeekInvalidType<'de, 'a, R> {
+trait StringVisitor<'de, 'a, R>: AsExpected<'de, 'a, R> {
     fn visit_str(
         &mut self,
         token: Visitor<'a>,
@@ -2680,14 +2680,13 @@ trait AnyVisitor<'de, 'a, R>: StructVisitor<'de, 'a, R> + StringVisitor<'de, 'a,
     ) -> std::result::Result<Value<'a>, Error>;
 }
 
-impl<'de, 'a, V, R> PeekInvalidType<'de, 'a, R> for DynOnce<'a, V, V::Value>
+impl<'de, 'a, V, R> AsExpected<'de, 'a, R> for DynOnce<'a, V, V::Value>
 where
     V: de::Visitor<'de>,
     R: Read<'de>,
 {
-    fn peek_invalid_type(&self, token: &Visitor<'a>, deserializer: &mut Deserializer<R>) -> Error {
-        let visitor = self.as_visitor(&token);
-        deserializer.peek_invalid_type(visitor)
+    fn as_expected<'b>(&'b self, token: &'b Visitor<'a>) -> &'b dyn Expected {
+        self.as_visitor(&token)
     }
 }
 
