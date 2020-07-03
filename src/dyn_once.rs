@@ -12,13 +12,16 @@ enum DynInner<T, U> {
 }
 
 impl<'a, T, U> DynOnce<'a, T, U> {
-    pub fn new(visitor: T) -> (DynOnce<'a, T, U>, Visitor<'a>) {
+    pub unsafe fn new(
+        visitor: T,
+        _: &'a InvariantLifetime<'a>,
+    ) -> (DynOnce<'a, T, U>, Visitor<'a>) {
         (
             DynOnce {
                 inner: DynInner::Visitor(visitor),
                 _marker: std::marker::PhantomData,
             },
-            Visitor(std::marker::PhantomData),
+            Visitor(InvariantLifetime::default()),
         )
     }
 
@@ -47,20 +50,36 @@ impl<'a, T, U> DynOnce<'a, T, U> {
 
     pub fn set_value(&mut self, value: U) -> Value<'a> {
         self.inner = DynInner::Value(value);
-        Value(std::marker::PhantomData)
+        Value(InvariantLifetime::default())
     }
 }
 
-pub struct Value<'a>(std::marker::PhantomData<&'a mut ()>);
-pub struct Visitor<'a>(std::marker::PhantomData<&'a mut ()>);
+pub struct Value<'a>(InvariantLifetime<'a>);
+pub struct Visitor<'a>(InvariantLifetime<'a>);
+
+#[derive(Default)]
+pub struct InvariantLifetime<'a>(std::marker::PhantomData<fn(&'a ()) -> &'a ()>);
 
 // A macro is cheaper than a function
 #[macro_export]
 #[doc(hidden)]
 macro_rules! dyn_once {
-    ($visitor: expr, |$visitor_ident: ident, $token: ident| $expr: expr) => {{
-        let (mut once, $token) = DynOnce::new($visitor);
-        let $visitor_ident = &mut once;
-        $expr
-    }};
+    ($visitor: ident, $token: ident) => {
+        // Copied from the compact_arena crate
+        let tag = $crate::dyn_once::InvariantLifetime::default();
+        let (mut once, $token) = unsafe { $crate::dyn_once::DynOnce::new($visitor, &tag) };
+        let $visitor = &mut once;
+
+        let _guard;
+        // this doesn't make it to MIR, but ensures that borrowck will not
+        // unify the lifetimes of two macro calls by binding the lifetime to
+        // drop scope
+        if false {
+            struct Guard<'tag>(&'tag $crate::dyn_once::InvariantLifetime<'tag>);
+            impl<'tag> ::core::ops::Drop for Guard<'tag> {
+                fn drop(&mut self) {}
+            }
+            _guard = Guard(&tag);
+        }
+    };
 }

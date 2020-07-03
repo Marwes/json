@@ -1413,10 +1413,9 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
     where
         V: de::Visitor<'de>,
     {
-        dyn_once!(visitor, |visitor, token| {
-            let value = tri!(self.deserialize_any(visitor, token));
-            Ok(visitor.take_value(value))
-        })
+        dyn_once!(visitor, token);
+        let value = tri!(self.deserialize_any(visitor, token));
+        Ok(visitor.take_value(value))
     }
 
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value>
@@ -1811,10 +1810,9 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
     where
         V: de::Visitor<'de>,
     {
-        dyn_once!(visitor, |visitor, token| {
-            let value = tri!(self.deserialize_struct(visitor, token));
-            Ok(visitor.take_value(value))
-        })
+        dyn_once!(visitor, token);
+        let value = tri!(self.deserialize_struct(visitor, token));
+        Ok(visitor.take_value(value))
     }
 
     /// Parses an enum as an object like `{"$KEY":$VALUE}`, where $VALUE is either a straight
@@ -1941,12 +1939,11 @@ impl<'de, 'a, R: Read<'de> + 'a> de::SeqAccess<'de> for SeqAccess<'a, R> {
     where
         T: de::DeserializeSeed<'de>,
     {
-        dyn_once!(seed, |seed, token| {
-            match tri!(self.next_element_seed(seed, token)) {
-                None => Ok(None),
-                Some(value) => Ok(Some(seed.take_value(value))),
-            }
-        })
+        dyn_once!(seed, token);
+        match tri!(self.next_element_seed(seed, token)) {
+            None => Ok(None),
+            Some(value) => Ok(Some(seed.take_value(value))),
+        }
     }
 }
 
