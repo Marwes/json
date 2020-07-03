@@ -12,6 +12,7 @@ enum DynInner<T, U> {
 }
 
 impl<'a, T, U> DynOnce<'a, T, U> {
+    #[inline]
     pub unsafe fn new(
         visitor: T,
         _: &'a InvariantLifetime<'a>,
@@ -28,10 +29,11 @@ impl<'a, T, U> DynOnce<'a, T, U> {
     pub fn as_visitor<'b>(&'b self, _token: &'b Visitor<'a>) -> &'b T {
         match &self.inner {
             DynInner::Visitor(visitor) => visitor,
-            _ => unreachable!(),
+            _ => unsafe { std::hint::unreachable_unchecked() },
         }
     }
 
+    #[inline]
     pub fn take_visitor(&mut self, token: Visitor<'a>) -> (T, Empty<'a>) {
         match mem::replace(&mut self.inner, DynInner::Empty) {
             DynInner::Visitor(visitor) => (visitor, Empty(token.0)),
@@ -40,6 +42,7 @@ impl<'a, T, U> DynOnce<'a, T, U> {
         }
     }
 
+    #[inline]
     pub fn take_value(&mut self, _token: Value<'a>) -> U {
         match mem::replace(&mut self.inner, DynInner::Empty) {
             DynInner::Value(value) => value,
@@ -48,13 +51,10 @@ impl<'a, T, U> DynOnce<'a, T, U> {
         }
     }
 
+    #[inline]
     pub fn set_value(&mut self, token: Empty<'a>, value: U) -> Value<'a> {
-        match self.inner {
-            DynInner::Empty => (),
-            // SAFETY The token only exists if self is Empty
-            _ => unsafe { std::hint::unreachable_unchecked() },
-        }
-        self.inner = DynInner::Value(value);
+        // We can forget the inner value since it is guaranteed to be the empty variant
+        mem::forget(mem::replace(&mut self.inner, DynInner::Value(value)));
         Value(token.0)
     }
 }
@@ -66,7 +66,6 @@ pub struct Empty<'a>(InvariantLifetime<'a>);
 #[derive(Default)]
 pub struct InvariantLifetime<'a>(std::marker::PhantomData<fn(&'a ()) -> &'a ()>);
 
-// A macro is cheaper than a function
 #[macro_export]
 #[doc(hidden)]
 macro_rules! dyn_once {

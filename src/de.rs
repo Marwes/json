@@ -1510,6 +1510,14 @@ macro_rules! deserialize_number {
     };
 }
 
+macro_rules! deserialize_once {
+    ( $this: ident . $method: ident ($visitor: ident) ) => {{
+        dyn_once!($visitor, token);
+        let value = tri!($this.$method($visitor, token));
+        Ok($visitor.take_value(value))
+    }};
+}
+
 impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
     type Error = Error;
 
@@ -1518,18 +1526,14 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
     where
         V: de::Visitor<'de>,
     {
-        dyn_once!(visitor, token);
-        let value = tri!(self.deserialize_any(visitor, token));
-        Ok(visitor.take_value(value))
+        deserialize_once!(self.deserialize_any(visitor))
     }
 
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value>
     where
         V: de::Visitor<'de>,
     {
-        dyn_once!(visitor, token);
-        let value = tri!(self.deserialize_bool(visitor, token));
-        Ok(visitor.take_value(value))
+        deserialize_once!(self.deserialize_bool(visitor))
     }
 
     deserialize_number!(deserialize_i8);
@@ -1624,9 +1628,7 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
     where
         V: de::Visitor<'de>,
     {
-        dyn_once!(visitor, token);
-        let value = tri!(self.deserialize_str_dyn(visitor, token));
-        Ok(visitor.take_value(value))
+        deserialize_once!(self.deserialize_str_dyn(visitor))
     }
 
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value>
@@ -1805,9 +1807,7 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
     where
         V: de::Visitor<'de>,
     {
-        dyn_once!(visitor, token);
-        let value = tri!(self.deserialize_seq_dyn(visitor, token));
-        Ok(visitor.take_value(value))
+        deserialize_once!(self.deserialize_seq_dyn(visitor))
     }
 
     fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value>
@@ -1833,9 +1833,7 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
     where
         V: de::Visitor<'de>,
     {
-        dyn_once!(visitor, token);
-        let value = tri!(self.deserialize_map(visitor, token));
-        Ok(visitor.take_value(value))
+        deserialize_once!(self.deserialize_map(visitor))
     }
 
     fn deserialize_struct<V>(
@@ -1847,9 +1845,7 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
     where
         V: de::Visitor<'de>,
     {
-        dyn_once!(visitor, token);
-        let value = tri!(self.deserialize_struct(visitor, token));
-        Ok(visitor.take_value(value))
+        deserialize_once!(self.deserialize_struct(visitor))
     }
 
     /// Parses an enum as an object like `{"$KEY":$VALUE}`, where $VALUE is either a straight
