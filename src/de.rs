@@ -1942,8 +1942,10 @@ impl<'de, 'a, R: Read<'de> + 'a> de::SeqAccess<'de> for SeqAccess<'a, R> {
 macro_rules! run_once {
     ($token: expr, $visitor: ident $($method: tt)*) => { {
         let (visitor, token) = $visitor.take_visitor($token);
-        let value = tri!(visitor $($method)*);
-        Ok($visitor.set_value(token, value))
+        match visitor $($method)* {
+            Ok(value) => Ok($visitor.set_value(token, value)),
+            Err(err) => Err(err),
+        }
     } };
 }
 
