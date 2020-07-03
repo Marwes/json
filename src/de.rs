@@ -1235,6 +1235,74 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         self.read.end_raw_buffering(visitor)
     }
 
+    fn deserialize_any(&mut self, visitor: &mut dyn JsonVisitor<'de, R>) -> Result<()> {
+        let peek = tri!(self.parse_whitespace_in_value());
+
+        let value = match peek {
+            b'n' => {
+                self.eat_char();
+                tri!(self.parse_ident(b"ull"));
+                visitor.visit_unit()
+            }
+            b't' => {
+                self.eat_char();
+                tri!(self.parse_ident(b"rue"));
+                visitor.visit_bool(true)
+            }
+            b'f' => {
+                self.eat_char();
+                tri!(self.parse_ident(b"alse"));
+                visitor.visit_bool(false)
+            }
+            b'-' => {
+                self.eat_char();
+                visitor.visit_number(tri!(self.parse_any_number(false)))
+            }
+            b'0'..=b'9' => visitor.visit_number(tri!(self.parse_any_number(true))),
+            b'"' => {
+                self.eat_char();
+                self.scratch.clear();
+                match tri!(self.read.parse_str(&mut self.scratch)) {
+                    Reference::Borrowed(s) => visitor.visit_borrowed_str(s),
+                    Reference::Copied(s) => visitor.visit_str(s),
+                }
+            }
+            b'[' => {
+                check_recursion! {
+                    self.eat_char();
+                    let ret = visitor.visit_seq(SeqAccess::new(self));
+                }
+
+                match (ret, self.end_seq()) {
+                    (Ok(ret), Ok(())) => Ok(ret),
+                    (Err(err), _) | (_, Err(err)) => Err(err),
+                }
+            }
+            b'{' => {
+                check_recursion! {
+                    self.eat_char();
+                    let ret = visitor.visit_map(MapAccess::new(self));
+                }
+
+                match (ret, self.end_map()) {
+                    (Ok(ret), Ok(())) => Ok(ret),
+                    (Err(err), _) | (_, Err(err)) => Err(err),
+                }
+            }
+            _ => Err(self.peek_error(ErrorCode::ExpectedSomeValue)),
+        };
+
+        match value {
+            Ok(value) => Ok(value),
+            // The de::Error impl creates errors with unknown line and column.
+            // Fill in the position here by looking at the current index in the
+            // input. There is no way to tell whether this should call `error`
+            // or `peek_error` so pick the one that seems correct more often.
+            // Worst case, the position is off by one character.
+            Err(err) => Err(self.fix_position(err)),
+        }
+    }
+
     fn deserialize_struct(&mut self, visitor: &mut dyn JsonVisitor<'de, R>) -> Result<()> {
         let peek = tri!(self.parse_whitespace_in_value());
 
@@ -1335,71 +1403,9 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
     where
         V: de::Visitor<'de>,
     {
-        let peek = tri!(self.parse_whitespace_in_value());
-
-        let value = match peek {
-            b'n' => {
-                self.eat_char();
-                tri!(self.parse_ident(b"ull"));
-                visitor.visit_unit()
-            }
-            b't' => {
-                self.eat_char();
-                tri!(self.parse_ident(b"rue"));
-                visitor.visit_bool(true)
-            }
-            b'f' => {
-                self.eat_char();
-                tri!(self.parse_ident(b"alse"));
-                visitor.visit_bool(false)
-            }
-            b'-' => {
-                self.eat_char();
-                tri!(self.parse_any_number(false)).visit(visitor)
-            }
-            b'0'..=b'9' => tri!(self.parse_any_number(true)).visit(visitor),
-            b'"' => {
-                self.eat_char();
-                self.scratch.clear();
-                match tri!(self.read.parse_str(&mut self.scratch)) {
-                    Reference::Borrowed(s) => visitor.visit_borrowed_str(s),
-                    Reference::Copied(s) => visitor.visit_str(s),
-                }
-            }
-            b'[' => {
-                check_recursion! {
-                    self.eat_char();
-                    let ret = visitor.visit_seq(SeqAccess::new(self));
-                }
-
-                match (ret, self.end_seq()) {
-                    (Ok(ret), Ok(())) => Ok(ret),
-                    (Err(err), _) | (_, Err(err)) => Err(err),
-                }
-            }
-            b'{' => {
-                check_recursion! {
-                    self.eat_char();
-                    let ret = visitor.visit_map(MapAccess::new(self));
-                }
-
-                match (ret, self.end_map()) {
-                    (Ok(ret), Ok(())) => Ok(ret),
-                    (Err(err), _) | (_, Err(err)) => Err(err),
-                }
-            }
-            _ => Err(self.peek_error(ErrorCode::ExpectedSomeValue)),
-        };
-
-        match value {
-            Ok(value) => Ok(value),
-            // The de::Error impl creates errors with unknown line and column.
-            // Fill in the position here by looking at the current index in the
-            // input. There is no way to tell whether this should call `error`
-            // or `peek_error` so pick the one that seems correct more often.
-            // Worst case, the position is off by one character.
-            Err(err) => Err(self.fix_position(err)),
-        }
+        let mut visitor = DynVisitor::Visitor(visitor);
+        tri!(self.deserialize_any(&mut visitor));
+        Ok(visitor.take_value())
     }
 
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value>
@@ -2548,8 +2554,12 @@ where
 }
 
 trait JsonVisitor<'de, R> {
+    fn visit_unit(&mut self) -> std::result::Result<(), Error>;
+    fn visit_bool(&mut self, b: bool) -> std::result::Result<(), Error>;
+    fn visit_str(&mut self, s: &str) -> std::result::Result<(), Error>;
+    fn visit_borrowed_str(&mut self, s: &'de str) -> std::result::Result<(), Error>;
+    fn visit_number(&mut self, number: ParserNumber) -> std::result::Result<(), Error>;
     fn visit_some(&mut self, deserializer: &mut Deserializer<R>) -> std::result::Result<(), Error>;
-
     fn visit_newtype_struct(
         &mut self,
         deserializer: &mut Deserializer<R>,
@@ -2589,6 +2599,38 @@ where
     V: de::Visitor<'de>,
     R: Read<'de>,
 {
+    fn visit_unit(&mut self) -> std::result::Result<(), Error> {
+        *self = DynVisitor::Value(tri!(self.take_visitor().visit_unit()));
+        Ok(())
+    }
+
+    fn visit_bool(&mut self, b: bool) -> std::result::Result<(), Error> {
+        *self = DynVisitor::Value(tri!(self.take_visitor().visit_bool(b)));
+        Ok(())
+    }
+
+    fn visit_str(&mut self, s: &str) -> std::result::Result<(), Error> {
+        *self = DynVisitor::Value(tri!(self.take_visitor().visit_str(s)));
+        Ok(())
+    }
+
+    fn visit_number(&mut self, number: ParserNumber) -> std::result::Result<(), Error> {
+        let visitor = self.take_visitor();
+        *self = DynVisitor::Value(tri!(match number {
+            ParserNumber::F64(x) => visitor.visit_f64(x),
+            ParserNumber::U64(x) => visitor.visit_u64(x),
+            ParserNumber::I64(x) => visitor.visit_i64(x),
+            #[cfg(feature = "arbitrary_precision")]
+            ParserNumber::String(x) => visitor.visit_map(NumberDeserializer { number: x.into() }),
+        }));
+        Ok(())
+    }
+
+    fn visit_borrowed_str(&mut self, s: &'de str) -> std::result::Result<(), Error> {
+        *self = DynVisitor::Value(tri!(self.take_visitor().visit_borrowed_str(s)));
+        Ok(())
+    }
+
     fn visit_some(&mut self, deserializer: &mut Deserializer<R>) -> std::result::Result<(), Error> {
         *self = DynVisitor::Value(tri!(self.take_visitor().visit_some(deserializer)));
         Ok(())
