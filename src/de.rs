@@ -2608,19 +2608,11 @@ trait AsExpected<'de, 'a, R> {
 }
 
 trait SeqVisitor<'de, 'a, R>: AsExpected<'de, 'a, R> {
-    fn visit_seq(
-        &mut self,
-        token: Visitor<'a>,
-        seq: SeqAccess<R>,
-    ) -> std::result::Result<Value<'a>, Error>;
+    fn visit_seq(&mut self, token: Visitor<'a>, seq: SeqAccess<R>) -> Result<Value<'a>>;
 }
 
 trait MapVisitor<'de, 'a, R>: SeqVisitor<'de, 'a, R> {
-    fn visit_map(
-        &mut self,
-        token: Visitor<'a>,
-        map: MapAccess<R>,
-    ) -> std::result::Result<Value<'a>, Error>;
+    fn visit_map(&mut self, token: Visitor<'a>, map: MapAccess<R>) -> Result<Value<'a>>;
 }
 
 trait StructVisitor<'de, 'a, R>: SeqVisitor<'de, 'a, R> + MapVisitor<'de, 'a, R> {}
@@ -2631,37 +2623,25 @@ impl<'de, 'a, R, T> StructVisitor<'de, 'a, R> for T where
 }
 
 trait EnumVisitor<'de, 'a, R>: SeqVisitor<'de, 'a, R> {
-    fn visit_enum(
-        &mut self,
-        token: Visitor<'a>,
-        map: VariantAccess<R>,
-    ) -> std::result::Result<Value<'a>, Error>;
+    fn visit_enum(&mut self, token: Visitor<'a>, map: VariantAccess<R>) -> Result<Value<'a>>;
 
     fn visit_unit_enum(
         &mut self,
         token: Visitor<'a>,
         map: UnitVariantAccess<R>,
-    ) -> std::result::Result<Value<'a>, Error>;
+    ) -> Result<Value<'a>>;
 }
 
 trait StringVisitor<'de, 'a, R>: AsExpected<'de, 'a, R> {
-    fn visit_str(
-        &mut self,
-        token: Visitor<'a>,
-        s: Reference<'de, '_, str>,
-    ) -> std::result::Result<Value<'a>, Error>;
+    fn visit_str(&mut self, token: Visitor<'a>, s: Reference<'de, '_, str>) -> Result<Value<'a>>;
 }
 
 trait BoolVisitor<'de, 'a, R>: AsExpected<'de, 'a, R> {
-    fn visit_bool(&mut self, token: Visitor<'a>, b: bool) -> std::result::Result<Value<'a>, Error>;
+    fn visit_bool(&mut self, token: Visitor<'a>, b: bool) -> Result<Value<'a>>;
 }
 
 trait NumberVisitor<'de, 'a, R>: AsExpected<'de, 'a, R> {
-    fn visit_number(
-        &mut self,
-        token: Visitor<'a>,
-        number: ParserNumber,
-    ) -> std::result::Result<Value<'a>, Error>;
+    fn visit_number(&mut self, token: Visitor<'a>, number: ParserNumber) -> Result<Value<'a>>;
 }
 
 trait AnyVisitor<'de, 'a, R>:
@@ -2670,7 +2650,7 @@ trait AnyVisitor<'de, 'a, R>:
     + BoolVisitor<'de, 'a, R>
     + NumberVisitor<'de, 'a, R>
 {
-    fn visit_unit(&mut self, token: Visitor<'a>) -> std::result::Result<Value<'a>, Error>;
+    fn visit_unit(&mut self, token: Visitor<'a>) -> Result<Value<'a>>;
 }
 
 impl<'de, 'a, V, R> AsExpected<'de, 'a, R> for DynOnce<'a, V, V::Value>
@@ -2688,11 +2668,7 @@ where
     V: de::Visitor<'de>,
     R: Read<'de>,
 {
-    fn visit_seq(
-        &mut self,
-        token: Visitor<'a>,
-        seq: SeqAccess<R>,
-    ) -> std::result::Result<Value<'a>, Error> {
+    fn visit_seq(&mut self, token: Visitor<'a>, seq: SeqAccess<R>) -> Result<Value<'a>> {
         run_once!(token, self.visit_seq(seq))
     }
 }
@@ -2702,11 +2678,7 @@ where
     V: de::Visitor<'de>,
     R: Read<'de>,
 {
-    fn visit_map(
-        &mut self,
-        token: Visitor<'a>,
-        map: MapAccess<R>,
-    ) -> std::result::Result<Value<'a>, Error> {
+    fn visit_map(&mut self, token: Visitor<'a>, map: MapAccess<R>) -> Result<Value<'a>> {
         run_once!(token, self.visit_map(map))
     }
 }
@@ -2716,11 +2688,7 @@ where
     V: de::Visitor<'de>,
     R: Read<'de>,
 {
-    fn visit_enum(
-        &mut self,
-        token: Visitor<'a>,
-        map: VariantAccess<R>,
-    ) -> std::result::Result<Value<'a>, Error> {
+    fn visit_enum(&mut self, token: Visitor<'a>, map: VariantAccess<R>) -> Result<Value<'a>> {
         run_once!(token, self.visit_enum(map))
     }
 
@@ -2728,7 +2696,7 @@ where
         &mut self,
         token: Visitor<'a>,
         map: UnitVariantAccess<R>,
-    ) -> std::result::Result<Value<'a>, Error> {
+    ) -> Result<Value<'a>> {
         run_once!(token, self.visit_enum(map))
     }
 }
@@ -2738,11 +2706,7 @@ where
     V: de::Visitor<'de>,
     R: Read<'de>,
 {
-    fn visit_str(
-        &mut self,
-        token: Visitor<'a>,
-        s: Reference<'de, '_, str>,
-    ) -> std::result::Result<Value<'a>, Error> {
+    fn visit_str(&mut self, token: Visitor<'a>, s: Reference<'de, '_, str>) -> Result<Value<'a>> {
         let (visitor, token) = self.take_visitor(token);
         let value = tri!(match s {
             Reference::Borrowed(s) => visitor.visit_borrowed_str(s),
@@ -2757,7 +2721,7 @@ where
     V: de::Visitor<'de>,
     R: Read<'de>,
 {
-    fn visit_bool(&mut self, token: Visitor<'a>, b: bool) -> std::result::Result<Value<'a>, Error> {
+    fn visit_bool(&mut self, token: Visitor<'a>, b: bool) -> Result<Value<'a>> {
         run_once!(token, self.visit_bool(b))
     }
 }
@@ -2767,11 +2731,7 @@ where
     V: de::Visitor<'de>,
     R: Read<'de>,
 {
-    fn visit_number(
-        &mut self,
-        token: Visitor<'a>,
-        number: ParserNumber,
-    ) -> std::result::Result<Value<'a>, Error> {
+    fn visit_number(&mut self, token: Visitor<'a>, number: ParserNumber) -> Result<Value<'a>> {
         let (visitor, token) = self.take_visitor(token);
         let value = tri!(match number {
             ParserNumber::F64(x) => visitor.visit_f64(x),
@@ -2789,7 +2749,7 @@ where
     V: de::Visitor<'de>,
     R: Read<'de>,
 {
-    fn visit_unit(&mut self, token: Visitor<'a>) -> std::result::Result<Value<'a>, Error> {
+    fn visit_unit(&mut self, token: Visitor<'a>) -> Result<Value<'a>> {
         run_once!(token, self.visit_unit())
     }
 }
