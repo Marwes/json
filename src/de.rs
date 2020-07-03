@@ -1936,6 +1936,14 @@ impl<'a, R: 'a> SeqAccess<'a, R> {
     }
 }
 
+macro_rules! run_once {
+    ($token: expr, $visitor: ident $($method: tt)*) => { {
+        let (visitor, token) = $visitor.take_visitor($token);
+        let value = tri!(visitor $($method)*);
+        Ok($visitor.set_value(token, value))
+    } };
+}
+
 trait JsonSeed<'de, 'a, R> {
     fn deserialize(
         &mut self,
@@ -1954,8 +1962,7 @@ where
         token: Visitor<'a>,
         deserializer: &mut Deserializer<R>,
     ) -> Result<Value<'a>> {
-        let value = tri!(self.take_visitor(token).deserialize(deserializer));
-        Ok(self.set_value(value))
+        run_once!(token, self.deserialize(deserializer))
     }
 }
 
@@ -2694,8 +2701,7 @@ where
         token: Visitor<'a>,
         seq: SeqAccess<R>,
     ) -> std::result::Result<Value<'a>, Error> {
-        let value = tri!(self.take_visitor(token).visit_seq(seq));
-        Ok(self.set_value(value))
+        run_once!(token, self.visit_seq(seq))
     }
 }
 
@@ -2709,8 +2715,7 @@ where
         token: Visitor<'a>,
         map: MapAccess<R>,
     ) -> std::result::Result<Value<'a>, Error> {
-        let value = tri!(self.take_visitor(token).visit_map(map));
-        Ok(self.set_value(value))
+        run_once!(token, self.visit_map(map))
     }
 }
 
@@ -2724,12 +2729,12 @@ where
         token: Visitor<'a>,
         s: Reference<'de, '_, str>,
     ) -> std::result::Result<Value<'a>, Error> {
-        let visitor = self.take_visitor(token);
+        let (visitor, token) = self.take_visitor(token);
         let value = tri!(match s {
             Reference::Borrowed(s) => visitor.visit_borrowed_str(s),
             Reference::Copied(s) => visitor.visit_str(s),
         });
-        Ok(self.set_value(value))
+        Ok(self.set_value(token, value))
     }
 }
 
@@ -2739,13 +2744,11 @@ where
     R: Read<'de>,
 {
     fn visit_unit(&mut self, token: Visitor<'a>) -> std::result::Result<Value<'a>, Error> {
-        let value = tri!(self.take_visitor(token).visit_unit());
-        Ok(self.set_value(value))
+        run_once!(token, self.visit_unit())
     }
 
     fn visit_bool(&mut self, token: Visitor<'a>, b: bool) -> std::result::Result<Value<'a>, Error> {
-        let value = tri!(self.take_visitor(token).visit_bool(b));
-        Ok(self.set_value(value))
+        run_once!(token, self.visit_bool(b))
     }
 
     fn visit_number(
@@ -2753,7 +2756,7 @@ where
         token: Visitor<'a>,
         number: ParserNumber,
     ) -> std::result::Result<Value<'a>, Error> {
-        let visitor = self.take_visitor(token);
+        let (visitor, token) = self.take_visitor(token);
         let value = tri!(match number {
             ParserNumber::F64(x) => visitor.visit_f64(x),
             ParserNumber::U64(x) => visitor.visit_u64(x),
@@ -2761,6 +2764,6 @@ where
             #[cfg(feature = "arbitrary_precision")]
             ParserNumber::String(x) => visitor.visit_map(NumberDeserializer { number: x.into() }),
         });
-        Ok(self.set_value(value))
+        Ok(self.set_value(token, value))
     }
 }

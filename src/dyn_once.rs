@@ -32,9 +32,9 @@ impl<'a, T, U> DynOnce<'a, T, U> {
         }
     }
 
-    pub fn take_visitor(&mut self, _token: Visitor<'a>) -> T {
+    pub fn take_visitor(&mut self, token: Visitor<'a>) -> (T, Empty<'a>) {
         match mem::replace(&mut self.inner, DynInner::Empty) {
-            DynInner::Visitor(visitor) => visitor,
+            DynInner::Visitor(visitor) => (visitor, Empty(token.0)),
             // SAFETY The token only exists if `Visitor` is set
             _ => unsafe { std::hint::unreachable_unchecked() },
         }
@@ -48,14 +48,20 @@ impl<'a, T, U> DynOnce<'a, T, U> {
         }
     }
 
-    pub fn set_value(&mut self, value: U) -> Value<'a> {
+    pub fn set_value(&mut self, token: Empty<'a>, value: U) -> Value<'a> {
+        match self.inner {
+            DynInner::Empty => (),
+            // SAFETY The token only exists if self is Empty
+            _ => unsafe { std::hint::unreachable_unchecked() },
+        }
         self.inner = DynInner::Value(value);
-        Value(InvariantLifetime::default())
+        Value(token.0)
     }
 }
 
 pub struct Value<'a>(InvariantLifetime<'a>);
 pub struct Visitor<'a>(InvariantLifetime<'a>);
+pub struct Empty<'a>(InvariantLifetime<'a>);
 
 #[derive(Default)]
 pub struct InvariantLifetime<'a>(std::marker::PhantomData<fn(&'a ()) -> &'a ()>);
