@@ -1239,7 +1239,7 @@ impl<'de, R: Read<'de>> Deserializer<R> {
 
     fn deserialize_any<'a>(
         &mut self,
-        visitor: &mut dyn JsonVisitor<'de, 'a, R>,
+        visitor: &mut dyn AnyVisitor<'de, 'a, R>,
         token: Visitor<'a>,
     ) -> Result<Value<'a>> {
         let peek = tri!(self.parse_whitespace_in_value());
@@ -1268,10 +1268,7 @@ impl<'de, R: Read<'de>> Deserializer<R> {
             b'"' => {
                 self.eat_char();
                 self.scratch.clear();
-                match tri!(self.read.parse_str(&mut self.scratch)) {
-                    Reference::Borrowed(s) => visitor.visit_borrowed_str(token, s),
-                    Reference::Copied(s) => visitor.visit_str(token, s),
-                }
+                visitor.visit_str(token, tri!(self.read.parse_str(&mut self.scratch)))
             }
             b'[' => {
                 check_recursion! {
@@ -1311,7 +1308,7 @@ impl<'de, R: Read<'de>> Deserializer<R> {
 
     fn deserialize_struct<'a>(
         &mut self,
-        visitor: &mut dyn JsonVisitor<'de, 'a, R>,
+        visitor: &mut dyn StructVisitor<'de, 'a, R>,
         token: Visitor<'a>,
     ) -> Result<Value<'a>> {
         let peek = tri!(self.parse_whitespace_in_value());
@@ -2604,31 +2601,7 @@ where
     from_trait(read::StrRead::new(s))
 }
 
-trait JsonVisitor<'de, 'a, R> {
-    fn visit_unit(&mut self, token: Visitor<'a>) -> std::result::Result<Value<'a>, Error>;
-    fn visit_bool(&mut self, token: Visitor<'a>, b: bool) -> std::result::Result<Value<'a>, Error>;
-    fn visit_str(&mut self, token: Visitor<'a>, s: &str) -> std::result::Result<Value<'a>, Error>;
-    fn visit_borrowed_str(
-        &mut self,
-        token: Visitor<'a>,
-        s: &'de str,
-    ) -> std::result::Result<Value<'a>, Error>;
-    fn visit_number(
-        &mut self,
-        token: Visitor<'a>,
-        number: ParserNumber,
-    ) -> std::result::Result<Value<'a>, Error>;
-    fn visit_some(
-        &mut self,
-        token: Visitor<'a>,
-        deserializer: &mut Deserializer<R>,
-    ) -> std::result::Result<Value<'a>, Error>;
-    fn visit_newtype_struct(
-        &mut self,
-        token: Visitor<'a>,
-        deserializer: &mut Deserializer<R>,
-    ) -> std::result::Result<Value<'a>, Error>;
-
+trait StructVisitor<'de, 'a, R> {
     fn visit_seq(
         &mut self,
         token: Visitor<'a>,
@@ -2640,79 +2613,29 @@ trait JsonVisitor<'de, 'a, R> {
         token: Visitor<'a>,
         map: MapAccess<R>,
     ) -> std::result::Result<Value<'a>, Error>;
-
-    fn visit_enum(
-        &mut self,
-        token: Visitor<'a>,
-        data: VariantAccess<R>,
-    ) -> std::result::Result<Value<'a>, Error>;
-
     fn peek_invalid_type(&self, token: &Visitor<'a>, deserializer: &mut Deserializer<R>) -> Error;
 }
 
-impl<'de, 'a, V, R> JsonVisitor<'de, 'a, R> for DynOnce<'a, V, V::Value>
-where
-    V: de::Visitor<'de>,
-    R: Read<'de>,
-{
-    fn visit_unit(&mut self, token: Visitor<'a>) -> std::result::Result<Value<'a>, Error> {
-        let value = tri!(self.take_visitor(token).visit_unit());
-        Ok(self.set_value(value))
-    }
-
-    fn visit_bool(&mut self, token: Visitor<'a>, b: bool) -> std::result::Result<Value<'a>, Error> {
-        let value = tri!(self.take_visitor(token).visit_bool(b));
-        Ok(self.set_value(value))
-    }
-
-    fn visit_str(&mut self, token: Visitor<'a>, s: &str) -> std::result::Result<Value<'a>, Error> {
-        let value = tri!(self.take_visitor(token).visit_str(s));
-        Ok(self.set_value(value))
-    }
-
+trait AnyVisitor<'de, 'a, R>: StructVisitor<'de, 'a, R> {
+    fn visit_unit(&mut self, token: Visitor<'a>) -> std::result::Result<Value<'a>, Error>;
+    fn visit_bool(&mut self, token: Visitor<'a>, b: bool) -> std::result::Result<Value<'a>, Error>;
+    fn visit_str(
+        &mut self,
+        token: Visitor<'a>,
+        s: Reference<'de, '_, str>,
+    ) -> std::result::Result<Value<'a>, Error>;
     fn visit_number(
         &mut self,
         token: Visitor<'a>,
         number: ParserNumber,
-    ) -> std::result::Result<Value<'a>, Error> {
-        let visitor = self.take_visitor(token);
-        let value = tri!(match number {
-            ParserNumber::F64(x) => visitor.visit_f64(x),
-            ParserNumber::U64(x) => visitor.visit_u64(x),
-            ParserNumber::I64(x) => visitor.visit_i64(x),
-            #[cfg(feature = "arbitrary_precision")]
-            ParserNumber::String(x) => visitor.visit_map(NumberDeserializer { number: x.into() }),
-        });
-        Ok(self.set_value(value))
-    }
+    ) -> std::result::Result<Value<'a>, Error>;
+}
 
-    fn visit_borrowed_str(
-        &mut self,
-        token: Visitor<'a>,
-        s: &'de str,
-    ) -> std::result::Result<Value<'a>, Error> {
-        let value = tri!(self.take_visitor(token).visit_borrowed_str(s));
-        Ok(self.set_value(value))
-    }
-
-    fn visit_some(
-        &mut self,
-        token: Visitor<'a>,
-        deserializer: &mut Deserializer<R>,
-    ) -> std::result::Result<Value<'a>, Error> {
-        let value = tri!(self.take_visitor(token).visit_some(deserializer));
-        Ok(self.set_value(value))
-    }
-
-    fn visit_newtype_struct(
-        &mut self,
-        token: Visitor<'a>,
-        deserializer: &mut Deserializer<R>,
-    ) -> std::result::Result<Value<'a>, Error> {
-        let value = tri!(self.take_visitor(token).visit_newtype_struct(deserializer));
-        Ok(self.set_value(value))
-    }
-
+impl<'de, 'a, V, R> StructVisitor<'de, 'a, R> for DynOnce<'a, V, V::Value>
+where
+    V: de::Visitor<'de>,
+    R: Read<'de>,
+{
     fn visit_seq(
         &mut self,
         token: Visitor<'a>,
@@ -2731,17 +2654,53 @@ where
         Ok(self.set_value(value))
     }
 
-    fn visit_enum(
-        &mut self,
-        token: Visitor<'a>,
-        data: VariantAccess<R>,
-    ) -> std::result::Result<Value<'a>, Error> {
-        let value = tri!(self.take_visitor(token).visit_enum(data));
-        Ok(self.set_value(value))
-    }
-
     fn peek_invalid_type(&self, token: &Visitor<'a>, deserializer: &mut Deserializer<R>) -> Error {
         let visitor = self.as_visitor(&token);
         deserializer.peek_invalid_type(visitor)
+    }
+}
+
+impl<'de, 'a, V, R> AnyVisitor<'de, 'a, R> for DynOnce<'a, V, V::Value>
+where
+    V: de::Visitor<'de>,
+    R: Read<'de>,
+{
+    fn visit_unit(&mut self, token: Visitor<'a>) -> std::result::Result<Value<'a>, Error> {
+        let value = tri!(self.take_visitor(token).visit_unit());
+        Ok(self.set_value(value))
+    }
+
+    fn visit_bool(&mut self, token: Visitor<'a>, b: bool) -> std::result::Result<Value<'a>, Error> {
+        let value = tri!(self.take_visitor(token).visit_bool(b));
+        Ok(self.set_value(value))
+    }
+
+    fn visit_str(
+        &mut self,
+        token: Visitor<'a>,
+        s: Reference<'de, '_, str>,
+    ) -> std::result::Result<Value<'a>, Error> {
+        let visitor = self.take_visitor(token);
+        let value = tri!(match s {
+            Reference::Borrowed(s) => visitor.visit_borrowed_str(s),
+            Reference::Copied(s) => visitor.visit_str(s),
+        });
+        Ok(self.set_value(value))
+    }
+
+    fn visit_number(
+        &mut self,
+        token: Visitor<'a>,
+        number: ParserNumber,
+    ) -> std::result::Result<Value<'a>, Error> {
+        let visitor = self.take_visitor(token);
+        let value = tri!(match number {
+            ParserNumber::F64(x) => visitor.visit_f64(x),
+            ParserNumber::U64(x) => visitor.visit_u64(x),
+            ParserNumber::I64(x) => visitor.visit_i64(x),
+            #[cfg(feature = "arbitrary_precision")]
+            ParserNumber::String(x) => visitor.visit_map(NumberDeserializer { number: x.into() }),
+        });
+        Ok(self.set_value(value))
     }
 }

@@ -29,6 +29,7 @@ impl<'a, T, U> DynOnce<'a, T, U> {
     pub fn take_visitor(&mut self, _token: Visitor<'a>) -> T {
         match mem::replace(&mut self.inner, DynInner::Empty) {
             DynInner::Visitor(visitor) => visitor,
+            // SAFETY The token only exists if `Visitor` is set
             _ => unsafe { std::hint::unreachable_unchecked() },
         }
     }
@@ -36,6 +37,7 @@ impl<'a, T, U> DynOnce<'a, T, U> {
     pub fn take_value(&mut self, _token: Value<'a>) -> U {
         match mem::replace(&mut self.inner, DynInner::Empty) {
             DynInner::Value(value) => value,
+            // SAFETY The token only exists if `Value` is set
             _ => unsafe { std::hint::unreachable_unchecked() },
         }
     }
