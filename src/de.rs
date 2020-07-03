@@ -138,19 +138,6 @@ pub(crate) enum ParserNumber {
 }
 
 impl ParserNumber {
-    fn visit<'de, V>(self, visitor: V) -> Result<V::Value>
-    where
-        V: de::Visitor<'de>,
-    {
-        match self {
-            ParserNumber::F64(x) => visitor.visit_f64(x),
-            ParserNumber::U64(x) => visitor.visit_u64(x),
-            ParserNumber::I64(x) => visitor.visit_i64(x),
-            #[cfg(feature = "arbitrary_precision")]
-            ParserNumber::String(x) => visitor.visit_map(NumberDeserializer { number: x.into() }),
-        }
-    }
-
     fn invalid_type(self, exp: &dyn Expected) -> Error {
         match self {
             ParserNumber::F64(x) => de::Error::invalid_type(Unexpected::Float(x), exp),
@@ -360,19 +347,20 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         self.fix_position(err)
     }
 
-    fn deserialize_number<V>(&mut self, visitor: V) -> Result<V::Value>
-    where
-        V: de::Visitor<'de>,
-    {
+    fn deserialize_number<'a>(
+        &mut self,
+        visitor: &mut dyn NumberVisitor<'de, 'a, R>,
+        token: Visitor<'a>,
+    ) -> Result<Value<'a>> {
         let peek = tri!(self.parse_whitespace_in_value());
 
         let value = match peek {
             b'-' => {
                 self.eat_char();
-                tri!(self.parse_integer(false)).visit(visitor)
+                visitor.visit_number(token, tri!(self.parse_integer(false)))
             }
-            b'0'..=b'9' => tri!(self.parse_integer(true)).visit(visitor),
-            _ => Err(self.peek_invalid_type(&visitor)),
+            b'0'..=b'9' => visitor.visit_number(token, tri!(self.parse_integer(true))),
+            _ => Err(self.peek_invalid_type(visitor.as_expected(&token))),
         };
 
         match value {
@@ -1499,23 +1487,23 @@ static POW10: [f64; 309] = [
     1e300, 1e301, 1e302, 1e303, 1e304, 1e305, 1e306, 1e307, 1e308,
 ];
 
-macro_rules! deserialize_number {
-    ($method:ident) => {
-        fn $method<V>(self, visitor: V) -> Result<V::Value>
-        where
-            V: de::Visitor<'de>,
-        {
-            self.deserialize_number(visitor)
-        }
-    };
-}
-
 macro_rules! deserialize_once {
     ( $this: ident . $method: ident ($visitor: ident) ) => {{
         dyn_once!($visitor, token);
         let value = tri!($this.$method($visitor, token));
         Ok($visitor.take_value(value))
     }};
+}
+
+macro_rules! deserialize_number {
+    ($method:ident) => {
+        fn $method<V>(self, visitor: V) -> Result<V::Value>
+        where
+            V: de::Visitor<'de>,
+        {
+            deserialize_once!(self.deserialize_number(visitor))
+        }
+    };
 }
 
 impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
@@ -1905,14 +1893,14 @@ impl<'a, R: 'a> SeqAccess<'a, R> {
     fn new(de: &'a mut Deserializer<R>) -> Self {
         SeqAccess { de, first: true }
     }
+}
 
-    fn next_element_seed<'de, 'b>(
-        &mut self,
-        seed: &mut dyn JsonSeed<'de, 'b, R>,
-        token: Visitor<'b>,
-    ) -> Result<Option<Value<'b>>>
+impl<'de, 'a, R: Read<'de> + 'a> de::SeqAccess<'de> for SeqAccess<'a, R> {
+    type Error = Error;
+
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>>
     where
-        R: Read<'de>,
+        T: de::DeserializeSeed<'de>,
     {
         let peek = match tri!(self.de.parse_whitespace()) {
             Some(b']') => {
@@ -1920,12 +1908,12 @@ impl<'a, R: 'a> SeqAccess<'a, R> {
             }
             Some(b',') if !self.first => {
                 self.de.eat_char();
-                tri!(self.de.parse_whitespace_in_value())
+                tri!(self.de.parse_whitespace())
             }
             Some(b) => {
                 if self.first {
                     self.first = false;
-                    b
+                    Some(b)
                 } else {
                     return Err(self.de.peek_error(ErrorCode::ExpectedListCommaOrEnd));
                 }
@@ -1936,8 +1924,9 @@ impl<'a, R: 'a> SeqAccess<'a, R> {
         };
 
         match peek {
-            b']' => Err(self.de.peek_error(ErrorCode::TrailingComma)),
-            _ => Ok(Some(tri!(seed.deserialize(token, &mut *self.de)))),
+            Some(b']') => Err(self.de.peek_error(ErrorCode::TrailingComma)),
+            Some(_) => Ok(Some(tri!(seed.deserialize(&mut *self.de)))),
+            None => Err(self.de.peek_error(ErrorCode::EofWhileParsingValue)),
         }
     }
 }
@@ -1948,43 +1937,6 @@ macro_rules! run_once {
         let value = tri!(visitor $($method)*);
         Ok($visitor.set_value(token, value))
     } };
-}
-
-trait JsonSeed<'de, 'a, R> {
-    fn deserialize(
-        &mut self,
-        token: Visitor<'a>,
-        deserializer: &mut Deserializer<R>,
-    ) -> Result<Value<'a>>;
-}
-
-impl<'de, 'a, R, T> JsonSeed<'de, 'a, R> for DynOnce<'a, T, T::Value>
-where
-    R: Read<'de>,
-    T: de::DeserializeSeed<'de>,
-{
-    fn deserialize(
-        &mut self,
-        token: Visitor<'a>,
-        deserializer: &mut Deserializer<R>,
-    ) -> Result<Value<'a>> {
-        run_once!(token, self.deserialize(deserializer))
-    }
-}
-
-impl<'de, 'a, R: Read<'de> + 'a> de::SeqAccess<'de> for SeqAccess<'a, R> {
-    type Error = Error;
-
-    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>>
-    where
-        T: de::DeserializeSeed<'de>,
-    {
-        dyn_once!(seed, token);
-        match tri!(self.next_element_seed(seed, token)) {
-            None => Ok(None),
-            Some(value) => Ok(Some(seed.take_value(value))),
-        }
-    }
 }
 
 struct MapAccess<'a, R: 'a> {
@@ -2680,15 +2632,21 @@ trait BoolVisitor<'de, 'a, R>: AsExpected<'de, 'a, R> {
     fn visit_bool(&mut self, token: Visitor<'a>, b: bool) -> std::result::Result<Value<'a>, Error>;
 }
 
-trait AnyVisitor<'de, 'a, R>:
-    StructVisitor<'de, 'a, R> + StringVisitor<'de, 'a, R> + BoolVisitor<'de, 'a, R>
-{
-    fn visit_unit(&mut self, token: Visitor<'a>) -> std::result::Result<Value<'a>, Error>;
+trait NumberVisitor<'de, 'a, R>: AsExpected<'de, 'a, R> {
     fn visit_number(
         &mut self,
         token: Visitor<'a>,
         number: ParserNumber,
     ) -> std::result::Result<Value<'a>, Error>;
+}
+
+trait AnyVisitor<'de, 'a, R>:
+    StructVisitor<'de, 'a, R>
+    + StringVisitor<'de, 'a, R>
+    + BoolVisitor<'de, 'a, R>
+    + NumberVisitor<'de, 'a, R>
+{
+    fn visit_unit(&mut self, token: Visitor<'a>) -> std::result::Result<Value<'a>, Error>;
 }
 
 impl<'de, 'a, V, R> AsExpected<'de, 'a, R> for DynOnce<'a, V, V::Value>
@@ -2758,15 +2716,11 @@ where
     }
 }
 
-impl<'de, 'a, V, R> AnyVisitor<'de, 'a, R> for DynOnce<'a, V, V::Value>
+impl<'de, 'a, V, R> NumberVisitor<'de, 'a, R> for DynOnce<'a, V, V::Value>
 where
     V: de::Visitor<'de>,
     R: Read<'de>,
 {
-    fn visit_unit(&mut self, token: Visitor<'a>) -> std::result::Result<Value<'a>, Error> {
-        run_once!(token, self.visit_unit())
-    }
-
     fn visit_number(
         &mut self,
         token: Visitor<'a>,
@@ -2781,5 +2735,15 @@ where
             ParserNumber::String(x) => visitor.visit_map(NumberDeserializer { number: x.into() }),
         });
         Ok(self.set_value(token, value))
+    }
+}
+
+impl<'de, 'a, V, R> AnyVisitor<'de, 'a, R> for DynOnce<'a, V, V::Value>
+where
+    V: de::Visitor<'de>,
+    R: Read<'de>,
+{
+    fn visit_unit(&mut self, token: Visitor<'a>) -> std::result::Result<Value<'a>, Error> {
+        run_once!(token, self.visit_unit())
     }
 }
