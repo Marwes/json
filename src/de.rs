@@ -1309,6 +1309,28 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         }
     }
 
+    fn deserialize_str_dyn<'a>(
+        &mut self,
+        visitor: &mut dyn StringVisitor<'de, 'a, R>,
+        token: Visitor<'a>,
+    ) -> Result<Value<'a>> {
+        let peek = tri!(self.parse_whitespace_in_value());
+
+        let value = match peek {
+            b'"' => {
+                self.eat_char();
+                self.scratch.clear();
+                visitor.visit_str(token, tri!(self.read.parse_str(&mut self.scratch)))
+            }
+            _ => Err(visitor.peek_invalid_type(&token, self)),
+        };
+
+        match value {
+            Ok(value) => Ok(value),
+            Err(err) => Err(self.fix_position(err)),
+        }
+    }
+
     fn deserialize_seq_dyn<'a>(
         &mut self,
         visitor: &mut dyn SeqVisitor<'de, 'a, R>,
@@ -1324,6 +1346,34 @@ impl<'de, R: Read<'de>> Deserializer<R> {
                 }
 
                 match (ret, self.end_seq()) {
+                    (Ok(ret), Ok(())) => Ok(ret),
+                    (Err(err), _) | (_, Err(err)) => Err(err),
+                }
+            }
+            _ => Err(visitor.peek_invalid_type(&token, self)),
+        };
+
+        match value {
+            Ok(value) => Ok(value),
+            Err(err) => Err(self.fix_position(err)),
+        }
+    }
+
+    fn deserialize_map<'a>(
+        &mut self,
+        visitor: &mut dyn MapVisitor<'de, 'a, R>,
+        token: Visitor<'a>,
+    ) -> Result<Value<'a>> {
+        let peek = tri!(self.parse_whitespace_in_value());
+
+        let value = match peek {
+            b'{' => {
+                check_recursion! {
+                    self.eat_char();
+                    let ret = visitor.visit_map(token, MapAccess::new(self));
+                }
+
+                match (ret, self.end_map()) {
                     (Ok(ret), Ok(())) => Ok(ret),
                     (Err(err), _) | (_, Err(err)) => Err(err),
                 }
@@ -1564,24 +1614,9 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
     where
         V: de::Visitor<'de>,
     {
-        let peek = tri!(self.parse_whitespace_in_value());
-
-        let value = match peek {
-            b'"' => {
-                self.eat_char();
-                self.scratch.clear();
-                match tri!(self.read.parse_str(&mut self.scratch)) {
-                    Reference::Borrowed(s) => visitor.visit_borrowed_str(s),
-                    Reference::Copied(s) => visitor.visit_str(s),
-                }
-            }
-            _ => Err(self.peek_invalid_type(&visitor)),
-        };
-
-        match value {
-            Ok(value) => Ok(value),
-            Err(err) => Err(self.fix_position(err)),
-        }
+        dyn_once!(visitor, token);
+        let value = tri!(self.deserialize_str_dyn(visitor, token));
+        Ok(visitor.take_value(value))
     }
 
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value>
@@ -1788,27 +1823,9 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
     where
         V: de::Visitor<'de>,
     {
-        let peek = tri!(self.parse_whitespace_in_value());
-
-        let value = match peek {
-            b'{' => {
-                check_recursion! {
-                    self.eat_char();
-                    let ret = visitor.visit_map(MapAccess::new(self));
-                }
-
-                match (ret, self.end_map()) {
-                    (Ok(ret), Ok(())) => Ok(ret),
-                    (Err(err), _) | (_, Err(err)) => Err(err),
-                }
-            }
-            _ => Err(self.peek_invalid_type(&visitor)),
-        };
-
-        match value {
-            Ok(value) => Ok(value),
-            Err(err) => Err(self.fix_position(err)),
-        }
+        dyn_once!(visitor, token);
+        let value = tri!(self.deserialize_map(visitor, token));
+        Ok(visitor.take_value(value))
     }
 
     fn deserialize_struct<V>(
@@ -2611,17 +2628,19 @@ where
     from_trait(read::StrRead::new(s))
 }
 
-trait SeqVisitor<'de, 'a, R> {
+trait PeekInvalidType<'de, 'a, R> {
+    fn peek_invalid_type(&self, token: &Visitor<'a>, deserializer: &mut Deserializer<R>) -> Error;
+}
+
+trait SeqVisitor<'de, 'a, R>: PeekInvalidType<'de, 'a, R> {
     fn visit_seq(
         &mut self,
         token: Visitor<'a>,
         seq: SeqAccess<R>,
     ) -> std::result::Result<Value<'a>, Error>;
-
-    fn peek_invalid_type(&self, token: &Visitor<'a>, deserializer: &mut Deserializer<R>) -> Error;
 }
 
-trait StructVisitor<'de, 'a, R>: SeqVisitor<'de, 'a, R> {
+trait MapVisitor<'de, 'a, R>: SeqVisitor<'de, 'a, R> {
     fn visit_map(
         &mut self,
         token: Visitor<'a>,
@@ -2629,19 +2648,40 @@ trait StructVisitor<'de, 'a, R>: SeqVisitor<'de, 'a, R> {
     ) -> std::result::Result<Value<'a>, Error>;
 }
 
-trait AnyVisitor<'de, 'a, R>: StructVisitor<'de, 'a, R> {
-    fn visit_unit(&mut self, token: Visitor<'a>) -> std::result::Result<Value<'a>, Error>;
-    fn visit_bool(&mut self, token: Visitor<'a>, b: bool) -> std::result::Result<Value<'a>, Error>;
+trait StructVisitor<'de, 'a, R>: SeqVisitor<'de, 'a, R> + MapVisitor<'de, 'a, R> {}
+
+impl<'de, 'a, R, T> StructVisitor<'de, 'a, R> for T where
+    T: SeqVisitor<'de, 'a, R> + MapVisitor<'de, 'a, R>
+{
+}
+
+trait StringVisitor<'de, 'a, R>: PeekInvalidType<'de, 'a, R> {
     fn visit_str(
         &mut self,
         token: Visitor<'a>,
         s: Reference<'de, '_, str>,
     ) -> std::result::Result<Value<'a>, Error>;
+}
+
+trait AnyVisitor<'de, 'a, R>: StructVisitor<'de, 'a, R> + StringVisitor<'de, 'a, R> {
+    fn visit_unit(&mut self, token: Visitor<'a>) -> std::result::Result<Value<'a>, Error>;
+    fn visit_bool(&mut self, token: Visitor<'a>, b: bool) -> std::result::Result<Value<'a>, Error>;
     fn visit_number(
         &mut self,
         token: Visitor<'a>,
         number: ParserNumber,
     ) -> std::result::Result<Value<'a>, Error>;
+}
+
+impl<'de, 'a, V, R> PeekInvalidType<'de, 'a, R> for DynOnce<'a, V, V::Value>
+where
+    V: de::Visitor<'de>,
+    R: Read<'de>,
+{
+    fn peek_invalid_type(&self, token: &Visitor<'a>, deserializer: &mut Deserializer<R>) -> Error {
+        let visitor = self.as_visitor(&token);
+        deserializer.peek_invalid_type(visitor)
+    }
 }
 
 impl<'de, 'a, V, R> SeqVisitor<'de, 'a, R> for DynOnce<'a, V, V::Value>
@@ -2657,14 +2697,9 @@ where
         let value = tri!(self.take_visitor(token).visit_seq(seq));
         Ok(self.set_value(value))
     }
-
-    fn peek_invalid_type(&self, token: &Visitor<'a>, deserializer: &mut Deserializer<R>) -> Error {
-        let visitor = self.as_visitor(&token);
-        deserializer.peek_invalid_type(visitor)
-    }
 }
 
-impl<'de, 'a, V, R> StructVisitor<'de, 'a, R> for DynOnce<'a, V, V::Value>
+impl<'de, 'a, V, R> MapVisitor<'de, 'a, R> for DynOnce<'a, V, V::Value>
 where
     V: de::Visitor<'de>,
     R: Read<'de>,
@@ -2675,6 +2710,25 @@ where
         map: MapAccess<R>,
     ) -> std::result::Result<Value<'a>, Error> {
         let value = tri!(self.take_visitor(token).visit_map(map));
+        Ok(self.set_value(value))
+    }
+}
+
+impl<'de, 'a, V, R> StringVisitor<'de, 'a, R> for DynOnce<'a, V, V::Value>
+where
+    V: de::Visitor<'de>,
+    R: Read<'de>,
+{
+    fn visit_str(
+        &mut self,
+        token: Visitor<'a>,
+        s: Reference<'de, '_, str>,
+    ) -> std::result::Result<Value<'a>, Error> {
+        let visitor = self.take_visitor(token);
+        let value = tri!(match s {
+            Reference::Borrowed(s) => visitor.visit_borrowed_str(s),
+            Reference::Copied(s) => visitor.visit_str(s),
+        });
         Ok(self.set_value(value))
     }
 }
@@ -2691,19 +2745,6 @@ where
 
     fn visit_bool(&mut self, token: Visitor<'a>, b: bool) -> std::result::Result<Value<'a>, Error> {
         let value = tri!(self.take_visitor(token).visit_bool(b));
-        Ok(self.set_value(value))
-    }
-
-    fn visit_str(
-        &mut self,
-        token: Visitor<'a>,
-        s: Reference<'de, '_, str>,
-    ) -> std::result::Result<Value<'a>, Error> {
-        let visitor = self.take_visitor(token);
-        let value = tri!(match s {
-            Reference::Borrowed(s) => visitor.visit_borrowed_str(s),
-            Reference::Copied(s) => visitor.visit_str(s),
-        });
         Ok(self.set_value(value))
     }
 
