@@ -1309,6 +1309,34 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         }
     }
 
+    fn deserialize_seq_dyn<'a>(
+        &mut self,
+        visitor: &mut dyn SeqVisitor<'de, 'a, R>,
+        token: Visitor<'a>,
+    ) -> Result<Value<'a>> {
+        let peek = tri!(self.parse_whitespace_in_value());
+
+        let value = match peek {
+            b'[' => {
+                check_recursion! {
+                    self.eat_char();
+                    let ret = visitor.visit_seq(token, SeqAccess::new(self));
+                }
+
+                match (ret, self.end_seq()) {
+                    (Ok(ret), Ok(())) => Ok(ret),
+                    (Err(err), _) | (_, Err(err)) => Err(err),
+                }
+            }
+            _ => Err(visitor.peek_invalid_type(&token, self)),
+        };
+
+        match value {
+            Ok(value) => Ok(value),
+            Err(err) => Err(self.fix_position(err)),
+        }
+    }
+
     fn deserialize_struct<'a>(
         &mut self,
         visitor: &mut dyn StructVisitor<'de, 'a, R>,
@@ -1732,27 +1760,9 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
     where
         V: de::Visitor<'de>,
     {
-        let peek = tri!(self.parse_whitespace_in_value());
-
-        let value = match peek {
-            b'[' => {
-                check_recursion! {
-                    self.eat_char();
-                    let ret = visitor.visit_seq(SeqAccess::new(self));
-                }
-
-                match (ret, self.end_seq()) {
-                    (Ok(ret), Ok(())) => Ok(ret),
-                    (Err(err), _) | (_, Err(err)) => Err(err),
-                }
-            }
-            _ => Err(self.peek_invalid_type(&visitor)),
-        };
-
-        match value {
-            Ok(value) => Ok(value),
-            Err(err) => Err(self.fix_position(err)),
-        }
+        dyn_once!(visitor, token);
+        let value = tri!(self.deserialize_seq_dyn(visitor, token));
+        Ok(visitor.take_value(value))
     }
 
     fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value>
@@ -2601,19 +2611,22 @@ where
     from_trait(read::StrRead::new(s))
 }
 
-trait StructVisitor<'de, 'a, R> {
+trait SeqVisitor<'de, 'a, R> {
     fn visit_seq(
         &mut self,
         token: Visitor<'a>,
         seq: SeqAccess<R>,
     ) -> std::result::Result<Value<'a>, Error>;
 
+    fn peek_invalid_type(&self, token: &Visitor<'a>, deserializer: &mut Deserializer<R>) -> Error;
+}
+
+trait StructVisitor<'de, 'a, R>: SeqVisitor<'de, 'a, R> {
     fn visit_map(
         &mut self,
         token: Visitor<'a>,
         map: MapAccess<R>,
     ) -> std::result::Result<Value<'a>, Error>;
-    fn peek_invalid_type(&self, token: &Visitor<'a>, deserializer: &mut Deserializer<R>) -> Error;
 }
 
 trait AnyVisitor<'de, 'a, R>: StructVisitor<'de, 'a, R> {
@@ -2631,7 +2644,7 @@ trait AnyVisitor<'de, 'a, R>: StructVisitor<'de, 'a, R> {
     ) -> std::result::Result<Value<'a>, Error>;
 }
 
-impl<'de, 'a, V, R> StructVisitor<'de, 'a, R> for DynOnce<'a, V, V::Value>
+impl<'de, 'a, V, R> SeqVisitor<'de, 'a, R> for DynOnce<'a, V, V::Value>
 where
     V: de::Visitor<'de>,
     R: Read<'de>,
@@ -2645,6 +2658,17 @@ where
         Ok(self.set_value(value))
     }
 
+    fn peek_invalid_type(&self, token: &Visitor<'a>, deserializer: &mut Deserializer<R>) -> Error {
+        let visitor = self.as_visitor(&token);
+        deserializer.peek_invalid_type(visitor)
+    }
+}
+
+impl<'de, 'a, V, R> StructVisitor<'de, 'a, R> for DynOnce<'a, V, V::Value>
+where
+    V: de::Visitor<'de>,
+    R: Read<'de>,
+{
     fn visit_map(
         &mut self,
         token: Visitor<'a>,
@@ -2652,11 +2676,6 @@ where
     ) -> std::result::Result<Value<'a>, Error> {
         let value = tri!(self.take_visitor(token).visit_map(map));
         Ok(self.set_value(value))
-    }
-
-    fn peek_invalid_type(&self, token: &Visitor<'a>, deserializer: &mut Deserializer<R>) -> Error {
-        let visitor = self.as_visitor(&token);
-        deserializer.peek_invalid_type(visitor)
     }
 }
 
