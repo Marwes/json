@@ -454,6 +454,7 @@ pub mod value;
 
 mod features_check;
 
+mod dyn_once;
 mod io;
 #[cfg(feature = "std")]
 mod iter;

@@ -18,6 +18,8 @@ pub use crate::read::{Read, SliceRead, StrRead};
 #[cfg(feature = "std")]
 pub use crate::read::IoRead;
 
+use crate::dyn_once::{dyn_once, DynOnce, Value, Visitor};
+
 #[cfg(not(feature = "unbounded_depth"))]
 macro_rules! if_checking_recursion_limit {
     ($($body:tt)*) => {
@@ -1235,42 +1237,46 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         self.read.end_raw_buffering(visitor)
     }
 
-    fn deserialize_any(&mut self, visitor: &mut dyn JsonVisitor<'de, R>) -> Result<()> {
+    fn deserialize_any<'a>(
+        &mut self,
+        visitor: &mut dyn JsonVisitor<'de, 'a, R>,
+        token: Visitor<'a>,
+    ) -> Result<Value<'a>> {
         let peek = tri!(self.parse_whitespace_in_value());
 
         let value = match peek {
             b'n' => {
                 self.eat_char();
                 tri!(self.parse_ident(b"ull"));
-                visitor.visit_unit()
+                visitor.visit_unit(token)
             }
             b't' => {
                 self.eat_char();
                 tri!(self.parse_ident(b"rue"));
-                visitor.visit_bool(true)
+                visitor.visit_bool(token, true)
             }
             b'f' => {
                 self.eat_char();
                 tri!(self.parse_ident(b"alse"));
-                visitor.visit_bool(false)
+                visitor.visit_bool(token, false)
             }
             b'-' => {
                 self.eat_char();
-                visitor.visit_number(tri!(self.parse_any_number(false)))
+                visitor.visit_number(token, tri!(self.parse_any_number(false)))
             }
-            b'0'..=b'9' => visitor.visit_number(tri!(self.parse_any_number(true))),
+            b'0'..=b'9' => visitor.visit_number(token, tri!(self.parse_any_number(true))),
             b'"' => {
                 self.eat_char();
                 self.scratch.clear();
                 match tri!(self.read.parse_str(&mut self.scratch)) {
-                    Reference::Borrowed(s) => visitor.visit_borrowed_str(s),
-                    Reference::Copied(s) => visitor.visit_str(s),
+                    Reference::Borrowed(s) => visitor.visit_borrowed_str(token, s),
+                    Reference::Copied(s) => visitor.visit_str(token, s),
                 }
             }
             b'[' => {
                 check_recursion! {
                     self.eat_char();
-                    let ret = visitor.visit_seq(SeqAccess::new(self));
+                    let ret = visitor.visit_seq(token, SeqAccess::new(self));
                 }
 
                 match (ret, self.end_seq()) {
@@ -1281,7 +1287,7 @@ impl<'de, R: Read<'de>> Deserializer<R> {
             b'{' => {
                 check_recursion! {
                     self.eat_char();
-                    let ret = visitor.visit_map(MapAccess::new(self));
+                    let ret = visitor.visit_map(token, MapAccess::new(self));
                 }
 
                 match (ret, self.end_map()) {
@@ -1303,14 +1309,18 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         }
     }
 
-    fn deserialize_struct(&mut self, visitor: &mut dyn JsonVisitor<'de, R>) -> Result<()> {
+    fn deserialize_struct<'a>(
+        &mut self,
+        visitor: &mut dyn JsonVisitor<'de, 'a, R>,
+        token: Visitor<'a>,
+    ) -> Result<Value<'a>> {
         let peek = tri!(self.parse_whitespace_in_value());
 
         let value = match peek {
             b'[' => {
                 check_recursion! {
                     self.eat_char();
-                    let ret = visitor.visit_seq(SeqAccess::new(self));
+                    let ret = visitor.visit_seq(token, SeqAccess::new(self));
                 }
 
                 match (ret, self.end_seq()) {
@@ -1321,7 +1331,7 @@ impl<'de, R: Read<'de>> Deserializer<R> {
             b'{' => {
                 check_recursion! {
                     self.eat_char();
-                    let ret = visitor.visit_map(MapAccess::new(self));
+                    let ret = visitor.visit_map(token, MapAccess::new(self));
                 }
 
                 match (ret, self.end_map()) {
@@ -1329,7 +1339,7 @@ impl<'de, R: Read<'de>> Deserializer<R> {
                     (Err(err), _) | (_, Err(err)) => Err(err),
                 }
             }
-            _ => Err(visitor.peek_invalid_type(self)),
+            _ => Err(visitor.peek_invalid_type(&token, self)),
         };
 
         match value {
@@ -1403,9 +1413,10 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
     where
         V: de::Visitor<'de>,
     {
-        let mut visitor = DynVisitor::Visitor(visitor);
-        tri!(self.deserialize_any(&mut visitor));
-        Ok(visitor.take_value())
+        dyn_once(visitor, |visitor, token| {
+            let value = tri!(self.deserialize_any(visitor, token));
+            Ok(visitor.take_value(value))
+        })
     }
 
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value>
@@ -1800,9 +1811,10 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
     where
         V: de::Visitor<'de>,
     {
-        let mut visitor = DynVisitor::Visitor(visitor);
-        tri!(self.deserialize_struct(&mut visitor));
-        Ok(visitor.take_value())
+        dyn_once(visitor, |visitor, token| {
+            let value = tri!(self.deserialize_struct(visitor, token));
+            Ok(visitor.take_value(value))
+        })
     }
 
     /// Parses an enum as an object like `{"$KEY":$VALUE}`, where $VALUE is either a straight
@@ -1862,14 +1874,14 @@ impl<'a, R: 'a> SeqAccess<'a, R> {
     fn new(de: &'a mut Deserializer<R>) -> Self {
         SeqAccess { de, first: true }
     }
-}
 
-impl<'de, 'a, R: Read<'de> + 'a> de::SeqAccess<'de> for SeqAccess<'a, R> {
-    type Error = Error;
-
-    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>>
+    fn next_element_seed<'de, 'b>(
+        &mut self,
+        seed: &mut dyn JsonSeed<'de, 'b, R>,
+        token: Visitor<'b>,
+    ) -> Result<Option<Value<'b>>>
     where
-        T: de::DeserializeSeed<'de>,
+        R: Read<'de>,
     {
         let peek = match tri!(self.de.parse_whitespace()) {
             Some(b']') => {
@@ -1894,8 +1906,47 @@ impl<'de, 'a, R: Read<'de> + 'a> de::SeqAccess<'de> for SeqAccess<'a, R> {
 
         match peek {
             b']' => Err(self.de.peek_error(ErrorCode::TrailingComma)),
-            _ => Ok(Some(tri!(seed.deserialize(&mut *self.de)))),
+            _ => Ok(Some(tri!(seed.deserialize(token, &mut *self.de)))),
         }
+    }
+}
+
+trait JsonSeed<'de, 'a, R> {
+    fn deserialize(
+        &mut self,
+        token: Visitor<'a>,
+        deserializer: &mut Deserializer<R>,
+    ) -> Result<Value<'a>>;
+}
+
+impl<'de, 'a, R, T> JsonSeed<'de, 'a, R> for DynOnce<'a, T, T::Value>
+where
+    R: Read<'de>,
+    T: de::DeserializeSeed<'de>,
+{
+    fn deserialize(
+        &mut self,
+        token: Visitor<'a>,
+        deserializer: &mut Deserializer<R>,
+    ) -> Result<Value<'a>> {
+        let value = tri!(self.take_visitor(token).deserialize(deserializer));
+        Ok(self.set_value(value))
+    }
+}
+
+impl<'de, 'a, R: Read<'de> + 'a> de::SeqAccess<'de> for SeqAccess<'a, R> {
+    type Error = Error;
+
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>>
+    where
+        T: de::DeserializeSeed<'de>,
+    {
+        dyn_once(seed, |seed, token| {
+            match tri!(self.next_element_seed(seed, token)) {
+                None => Ok(None),
+                Some(value) => Ok(Some(seed.take_value(value))),
+            }
+        })
     }
 }
 
@@ -2553,116 +2604,144 @@ where
     from_trait(read::StrRead::new(s))
 }
 
-trait JsonVisitor<'de, R> {
-    fn visit_unit(&mut self) -> std::result::Result<(), Error>;
-    fn visit_bool(&mut self, b: bool) -> std::result::Result<(), Error>;
-    fn visit_str(&mut self, s: &str) -> std::result::Result<(), Error>;
-    fn visit_borrowed_str(&mut self, s: &'de str) -> std::result::Result<(), Error>;
-    fn visit_number(&mut self, number: ParserNumber) -> std::result::Result<(), Error>;
-    fn visit_some(&mut self, deserializer: &mut Deserializer<R>) -> std::result::Result<(), Error>;
+trait JsonVisitor<'de, 'a, R> {
+    fn visit_unit(&mut self, token: Visitor<'a>) -> std::result::Result<Value<'a>, Error>;
+    fn visit_bool(&mut self, token: Visitor<'a>, b: bool) -> std::result::Result<Value<'a>, Error>;
+    fn visit_str(&mut self, token: Visitor<'a>, s: &str) -> std::result::Result<Value<'a>, Error>;
+    fn visit_borrowed_str(
+        &mut self,
+        token: Visitor<'a>,
+        s: &'de str,
+    ) -> std::result::Result<Value<'a>, Error>;
+    fn visit_number(
+        &mut self,
+        token: Visitor<'a>,
+        number: ParserNumber,
+    ) -> std::result::Result<Value<'a>, Error>;
+    fn visit_some(
+        &mut self,
+        token: Visitor<'a>,
+        deserializer: &mut Deserializer<R>,
+    ) -> std::result::Result<Value<'a>, Error>;
     fn visit_newtype_struct(
         &mut self,
+        token: Visitor<'a>,
         deserializer: &mut Deserializer<R>,
-    ) -> std::result::Result<(), Error>;
+    ) -> std::result::Result<Value<'a>, Error>;
 
-    fn visit_seq(&mut self, seq: SeqAccess<R>) -> std::result::Result<(), Error>;
+    fn visit_seq(
+        &mut self,
+        token: Visitor<'a>,
+        seq: SeqAccess<R>,
+    ) -> std::result::Result<Value<'a>, Error>;
 
-    fn visit_map(&mut self, map: MapAccess<R>) -> std::result::Result<(), Error>;
+    fn visit_map(
+        &mut self,
+        token: Visitor<'a>,
+        map: MapAccess<R>,
+    ) -> std::result::Result<Value<'a>, Error>;
 
-    fn visit_enum(&mut self, data: VariantAccess<R>) -> std::result::Result<(), Error>;
+    fn visit_enum(
+        &mut self,
+        token: Visitor<'a>,
+        data: VariantAccess<R>,
+    ) -> std::result::Result<Value<'a>, Error>;
 
-    fn peek_invalid_type(&self, deserializer: &mut Deserializer<R>) -> Error;
+    fn peek_invalid_type(&self, token: &Visitor<'a>, deserializer: &mut Deserializer<R>) -> Error;
 }
 
-enum DynVisitor<T, U> {
-    Visitor(T),
-    Value(U),
-    Empty,
-}
-impl<T, U> DynVisitor<T, U> {
-    fn take_visitor(&mut self) -> T {
-        match mem::replace(self, DynVisitor::Empty) {
-            DynVisitor::Visitor(visitor) => visitor,
-            _ => unreachable!(),
-        }
-    }
-    fn take_value(&mut self) -> U {
-        match mem::replace(self, DynVisitor::Empty) {
-            DynVisitor::Value(value) => value,
-            _ => unreachable!(),
-        }
-    }
-}
-
-impl<'de, V, R> JsonVisitor<'de, R> for DynVisitor<V, V::Value>
+impl<'de, 'a, V, R> JsonVisitor<'de, 'a, R> for DynOnce<'a, V, V::Value>
 where
     V: de::Visitor<'de>,
     R: Read<'de>,
 {
-    fn visit_unit(&mut self) -> std::result::Result<(), Error> {
-        *self = DynVisitor::Value(tri!(self.take_visitor().visit_unit()));
-        Ok(())
+    fn visit_unit(&mut self, token: Visitor<'a>) -> std::result::Result<Value<'a>, Error> {
+        let value = tri!(self.take_visitor(token).visit_unit());
+        Ok(self.set_value(value))
     }
 
-    fn visit_bool(&mut self, b: bool) -> std::result::Result<(), Error> {
-        *self = DynVisitor::Value(tri!(self.take_visitor().visit_bool(b)));
-        Ok(())
+    fn visit_bool(&mut self, token: Visitor<'a>, b: bool) -> std::result::Result<Value<'a>, Error> {
+        let value = tri!(self.take_visitor(token).visit_bool(b));
+        Ok(self.set_value(value))
     }
 
-    fn visit_str(&mut self, s: &str) -> std::result::Result<(), Error> {
-        *self = DynVisitor::Value(tri!(self.take_visitor().visit_str(s)));
-        Ok(())
+    fn visit_str(&mut self, token: Visitor<'a>, s: &str) -> std::result::Result<Value<'a>, Error> {
+        let value = tri!(self.take_visitor(token).visit_str(s));
+        Ok(self.set_value(value))
     }
 
-    fn visit_number(&mut self, number: ParserNumber) -> std::result::Result<(), Error> {
-        let visitor = self.take_visitor();
-        *self = DynVisitor::Value(tri!(match number {
+    fn visit_number(
+        &mut self,
+        token: Visitor<'a>,
+        number: ParserNumber,
+    ) -> std::result::Result<Value<'a>, Error> {
+        let visitor = self.take_visitor(token);
+        let value = tri!(match number {
             ParserNumber::F64(x) => visitor.visit_f64(x),
             ParserNumber::U64(x) => visitor.visit_u64(x),
             ParserNumber::I64(x) => visitor.visit_i64(x),
             #[cfg(feature = "arbitrary_precision")]
             ParserNumber::String(x) => visitor.visit_map(NumberDeserializer { number: x.into() }),
-        }));
-        Ok(())
+        });
+        Ok(self.set_value(value))
     }
 
-    fn visit_borrowed_str(&mut self, s: &'de str) -> std::result::Result<(), Error> {
-        *self = DynVisitor::Value(tri!(self.take_visitor().visit_borrowed_str(s)));
-        Ok(())
+    fn visit_borrowed_str(
+        &mut self,
+        token: Visitor<'a>,
+        s: &'de str,
+    ) -> std::result::Result<Value<'a>, Error> {
+        let value = tri!(self.take_visitor(token).visit_borrowed_str(s));
+        Ok(self.set_value(value))
     }
 
-    fn visit_some(&mut self, deserializer: &mut Deserializer<R>) -> std::result::Result<(), Error> {
-        *self = DynVisitor::Value(tri!(self.take_visitor().visit_some(deserializer)));
-        Ok(())
+    fn visit_some(
+        &mut self,
+        token: Visitor<'a>,
+        deserializer: &mut Deserializer<R>,
+    ) -> std::result::Result<Value<'a>, Error> {
+        let value = tri!(self.take_visitor(token).visit_some(deserializer));
+        Ok(self.set_value(value))
     }
 
     fn visit_newtype_struct(
         &mut self,
+        token: Visitor<'a>,
         deserializer: &mut Deserializer<R>,
-    ) -> std::result::Result<(), Error> {
-        *self = DynVisitor::Value(tri!(self.take_visitor().visit_newtype_struct(deserializer)));
-        Ok(())
+    ) -> std::result::Result<Value<'a>, Error> {
+        let value = tri!(self.take_visitor(token).visit_newtype_struct(deserializer));
+        Ok(self.set_value(value))
     }
 
-    fn visit_seq(&mut self, seq: SeqAccess<R>) -> std::result::Result<(), Error> {
-        *self = DynVisitor::Value(tri!(self.take_visitor().visit_seq(seq)));
-        Ok(())
+    fn visit_seq(
+        &mut self,
+        token: Visitor<'a>,
+        seq: SeqAccess<R>,
+    ) -> std::result::Result<Value<'a>, Error> {
+        let value = tri!(self.take_visitor(token).visit_seq(seq));
+        Ok(self.set_value(value))
     }
 
-    fn visit_map(&mut self, map: MapAccess<R>) -> std::result::Result<(), Error> {
-        *self = DynVisitor::Value(tri!(self.take_visitor().visit_map(map)));
-        Ok(())
+    fn visit_map(
+        &mut self,
+        token: Visitor<'a>,
+        map: MapAccess<R>,
+    ) -> std::result::Result<Value<'a>, Error> {
+        let value = tri!(self.take_visitor(token).visit_map(map));
+        Ok(self.set_value(value))
     }
 
-    fn visit_enum(&mut self, data: VariantAccess<R>) -> std::result::Result<(), Error> {
-        *self = DynVisitor::Value(tri!(self.take_visitor().visit_enum(data)));
-        Ok(())
+    fn visit_enum(
+        &mut self,
+        token: Visitor<'a>,
+        data: VariantAccess<R>,
+    ) -> std::result::Result<Value<'a>, Error> {
+        let value = tri!(self.take_visitor(token).visit_enum(data));
+        Ok(self.set_value(value))
     }
 
-    fn peek_invalid_type(&self, deserializer: &mut Deserializer<R>) -> Error {
-        match self {
-            DynVisitor::Visitor(visitor) => deserializer.peek_invalid_type(visitor),
-            _ => unreachable!(),
-        }
+    fn peek_invalid_type(&self, token: &Visitor<'a>, deserializer: &mut Deserializer<R>) -> Error {
+        let visitor = self.as_visitor(&token);
+        deserializer.peek_invalid_type(visitor)
     }
 }
