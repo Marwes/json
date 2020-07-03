@@ -1440,6 +1440,31 @@ impl<'de, R: Read<'de>> Deserializer<R> {
             Err(err) => Err(self.fix_position(err)),
         }
     }
+
+    fn deserialize_enum_dyn<'a>(
+        &mut self,
+        visitor: &mut dyn EnumVisitor<'de, 'a, R>,
+        token: Visitor<'a>,
+    ) -> Result<Value<'a>> {
+        match tri!(self.parse_whitespace_in_value()) {
+            b'{' => {
+                check_recursion! {
+                    self.eat_char();
+                    let value = tri!(visitor.visit_enum(token, VariantAccess::new(self)));
+                }
+
+                match tri!(self.parse_whitespace_in_object()) {
+                    b'}' => {
+                        self.eat_char();
+                        Ok(value)
+                    }
+                    _ => Err(self.error(ErrorCode::ExpectedSomeValue)),
+                }
+            }
+            b'"' => visitor.visit_unit_enum(token, UnitVariantAccess::new(self)),
+            _ => Err(self.peek_error(ErrorCode::ExpectedSomeValue)),
+        }
+    }
 }
 
 impl FromStr for Number {
@@ -1848,24 +1873,7 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
     where
         V: de::Visitor<'de>,
     {
-        match tri!(self.parse_whitespace_in_value()) {
-            b'{' => {
-                check_recursion! {
-                    self.eat_char();
-                    let value = tri!(visitor.visit_enum(VariantAccess::new(self)));
-                }
-
-                match tri!(self.parse_whitespace_in_object()) {
-                    b'}' => {
-                        self.eat_char();
-                        Ok(value)
-                    }
-                    _ => Err(self.error(ErrorCode::ExpectedSomeValue)),
-                }
-            }
-            b'"' => visitor.visit_enum(UnitVariantAccess::new(self)),
-            _ => Err(self.peek_error(ErrorCode::ExpectedSomeValue)),
-        }
+        deserialize_once!(self.deserialize_enum_dyn(visitor))
     }
 
     fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value>
@@ -2620,6 +2628,20 @@ impl<'de, 'a, R, T> StructVisitor<'de, 'a, R> for T where
 {
 }
 
+trait EnumVisitor<'de, 'a, R>: SeqVisitor<'de, 'a, R> {
+    fn visit_enum(
+        &mut self,
+        token: Visitor<'a>,
+        map: VariantAccess<R>,
+    ) -> std::result::Result<Value<'a>, Error>;
+
+    fn visit_unit_enum(
+        &mut self,
+        token: Visitor<'a>,
+        map: UnitVariantAccess<R>,
+    ) -> std::result::Result<Value<'a>, Error>;
+}
+
 trait StringVisitor<'de, 'a, R>: AsExpected<'de, 'a, R> {
     fn visit_str(
         &mut self,
@@ -2684,6 +2706,28 @@ where
         map: MapAccess<R>,
     ) -> std::result::Result<Value<'a>, Error> {
         run_once!(token, self.visit_map(map))
+    }
+}
+
+impl<'de, 'a, V, R> EnumVisitor<'de, 'a, R> for DynOnce<'a, V, V::Value>
+where
+    V: de::Visitor<'de>,
+    R: Read<'de>,
+{
+    fn visit_enum(
+        &mut self,
+        token: Visitor<'a>,
+        map: VariantAccess<R>,
+    ) -> std::result::Result<Value<'a>, Error> {
+        run_once!(token, self.visit_enum(map))
+    }
+
+    fn visit_unit_enum(
+        &mut self,
+        token: Visitor<'a>,
+        map: UnitVariantAccess<R>,
+    ) -> std::result::Result<Value<'a>, Error> {
+        run_once!(token, self.visit_enum(map))
     }
 }
 
