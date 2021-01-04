@@ -331,11 +331,11 @@ where
 
     #[inline]
     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq> {
+        tri!(self
+            .formatter
+            .begin_array(&mut self.writer)
+            .map_err(Error::io));
         if len == Some(0) {
-            tri!(self
-                .formatter
-                .begin_array(&mut self.writer)
-                .map_err(Error::io));
             tri!(self
                 .formatter
                 .end_array(&mut self.writer)
@@ -345,10 +345,6 @@ where
                 state: State::Empty,
             })
         } else {
-            tri!(self
-                .formatter
-                .begin_array(&mut self.writer)
-                .map_err(Error::io));
             Ok(Compound::Map {
                 ser: self,
                 state: State::First,
@@ -384,11 +380,11 @@ where
 
     #[inline]
     fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap> {
+        tri!(self
+            .formatter
+            .begin_object(&mut self.writer)
+            .map_err(Error::io));
         if len == Some(0) {
-            tri!(self
-                .formatter
-                .begin_object(&mut self.writer)
-                .map_err(Error::io));
             tri!(self
                 .formatter
                 .end_object(&mut self.writer)
@@ -398,10 +394,6 @@ where
                 state: State::Empty,
             })
         } else {
-            tri!(self
-                .formatter
-                .begin_object(&mut self.writer)
-                .map_err(Error::io));
             Ok(Compound::Map {
                 ser: self,
                 state: State::First,
@@ -475,11 +467,7 @@ where
                 }
             }
         }
-        tri!(self
-            .formatter
-            .end_string(&mut self.writer)
-            .map_err(Error::io));
-        Ok(())
+        self.end_string()
     }
 }
 
@@ -1661,7 +1649,8 @@ pub trait Formatter {
     {
         use self::CharEscape::*;
 
-        let s = match char_escape {
+        let bytes;
+        let s: &[u8] = match char_escape {
             Quote => b"\\\"",
             ReverseSolidus => b"\\\\",
             Solidus => b"\\/",
@@ -1672,7 +1661,7 @@ pub trait Formatter {
             Tab => b"\\t",
             AsciiControl(byte) => {
                 static HEX_DIGITS: [u8; 16] = *b"0123456789abcdef";
-                let bytes = &[
+                bytes = [
                     b'\\',
                     b'u',
                     b'0',
@@ -1680,7 +1669,7 @@ pub trait Formatter {
                     HEX_DIGITS[(byte >> 4) as usize],
                     HEX_DIGITS[(byte & 0xF) as usize],
                 ];
-                return writer.write_all(bytes);
+                &bytes
             }
         };
 
@@ -1908,11 +1897,7 @@ impl<'a> Formatter for PrettyFormatter<'a> {
     where
         W: ?Sized + io::Write,
     {
-        if first {
-            tri!(writer.write_all(b"\n"));
-        } else {
-            tri!(writer.write_all(b",\n"));
-        }
+        tri!(writer.write_all(if first { b"\n" } else { b",\n" }));
         tri!(indent(writer, self.current_indent, self.indent));
         Ok(())
     }
@@ -1956,11 +1941,7 @@ impl<'a> Formatter for PrettyFormatter<'a> {
     where
         W: ?Sized + io::Write,
     {
-        if first {
-            tri!(writer.write_all(b"\n"));
-        } else {
-            tri!(writer.write_all(b",\n"));
-        }
+        tri!(writer.write_all(if first { b"\n" } else { b",\n" }));
         indent(writer, self.current_indent, self.indent)
     }
 
