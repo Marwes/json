@@ -65,23 +65,92 @@ where
             .map_err(Error::io)
     }
 
+    #[inline]
+    fn begin_object_key(&mut self, first: bool) -> Result<()> {
+        self.formatter
+            .begin_object_key(&mut self.writer, first)
+            .map_err(Error::io)
+    }
+
+    #[inline]
+    fn end_object_key(&mut self) -> Result<()> {
+        self.formatter
+            .end_object_key(&mut self.writer)
+            .map_err(Error::io)
+    }
+
+    #[inline]
+    fn begin_object(&mut self) -> Result<()> {
+        self.formatter
+            .begin_object(&mut self.writer)
+            .map_err(Error::io)
+    }
+
+    #[inline]
+    fn begin_object_value(&mut self) -> Result<()> {
+        self.formatter
+            .begin_object_value(&mut self.writer)
+            .map_err(Error::io)
+    }
+
+    #[inline]
+    fn end_object_value(&mut self) -> Result<()> {
+        self.formatter
+            .end_object_value(&mut self.writer)
+            .map_err(Error::io)
+    }
+
+    #[inline]
+    fn end_object(&mut self) -> Result<()> {
+        self.formatter
+            .end_object(&mut self.writer)
+            .map_err(Error::io)
+    }
+
+    #[inline]
+    fn begin_array(&mut self) -> Result<()> {
+        self.formatter
+            .begin_array(&mut self.writer)
+            .map_err(Error::io)
+    }
+
+    #[inline]
+    fn begin_array_value(&mut self, first: bool) -> Result<()> {
+        self.formatter
+            .begin_array_value(&mut self.writer, first)
+            .map_err(Error::io)
+    }
+
+    #[inline]
+    fn end_array_value(&mut self) -> Result<()> {
+        self.formatter
+            .end_array_value(&mut self.writer)
+            .map_err(Error::io)
+    }
+
+    #[inline]
+    fn end_array(&mut self) -> Result<()> {
+        self.formatter
+            .end_array(&mut self.writer)
+            .map_err(Error::io)
+    }
+
+    #[inline]
+    fn write_null(&mut self) -> Result<()> {
+        self.formatter
+            .write_null(&mut self.writer)
+            .map_err(Error::io)
+    }
+
     fn serialize_variant(&mut self, variant: &'static str) -> Result<()> {
         tri!(self
             .formatter
             .begin_object(&mut self.writer)
             .map_err(Error::io));
-        tri!(self
-            .formatter
-            .begin_object_key(&mut self.writer, true)
-            .map_err(Error::io));
+        tri!(self.begin_object_key(true));
         tri!(self.serialize_str(variant));
-        tri!(self
-            .formatter
-            .end_object_key(&mut self.writer)
-            .map_err(Error::io));
-        self.formatter
-            .begin_object_value(&mut self.writer)
-            .map_err(Error::io)
+        tri!(self.end_object_key());
+        self.begin_object_value()
     }
 }
 
@@ -202,10 +271,7 @@ where
     fn serialize_f32(self, value: f32) -> Result<()> {
         match value.classify() {
             FpCategory::Nan | FpCategory::Infinite => {
-                tri!(self
-                    .formatter
-                    .write_null(&mut self.writer)
-                    .map_err(Error::io));
+                tri!(self.write_null());
             }
             _ => {
                 tri!(self
@@ -221,10 +287,7 @@ where
     fn serialize_f64(self, value: f64) -> Result<()> {
         match value.classify() {
             FpCategory::Nan | FpCategory::Infinite => {
-                tri!(self
-                    .formatter
-                    .write_null(&mut self.writer)
-                    .map_err(Error::io));
+                tri!(self.write_null());
             }
             _ => {
                 tri!(self
@@ -261,10 +324,7 @@ where
 
     #[inline]
     fn serialize_unit(self) -> Result<()> {
-        tri!(self
-            .formatter
-            .write_null(&mut self.writer)
-            .map_err(Error::io));
+        tri!(self.write_null());
         Ok(())
     }
 
@@ -305,14 +365,8 @@ where
     {
         tri!(self.serialize_variant(variant));
         tri!(value.serialize(&mut *self));
-        tri!(self
-            .formatter
-            .end_object_value(&mut self.writer)
-            .map_err(Error::io));
-        tri!(self
-            .formatter
-            .end_object(&mut self.writer)
-            .map_err(Error::io));
+        tri!(self.end_object_value());
+        tri!(self.end_object());
         Ok(())
     }
 
@@ -331,15 +385,9 @@ where
 
     #[inline]
     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq> {
-        tri!(self
-            .formatter
-            .begin_array(&mut self.writer)
-            .map_err(Error::io));
+        tri!(self.begin_array());
         if len == Some(0) {
-            tri!(self
-                .formatter
-                .end_array(&mut self.writer)
-                .map_err(Error::io));
+            tri!(self.end_array());
             Ok(Compound::Map {
                 ser: self,
                 state: State::Empty,
@@ -380,15 +428,9 @@ where
 
     #[inline]
     fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap> {
-        tri!(self
-            .formatter
-            .begin_object(&mut self.writer)
-            .map_err(Error::io));
+        tri!(self.begin_object());
         if len == Some(0) {
-            tri!(self
-                .formatter
-                .end_object(&mut self.writer)
-                .map_err(Error::io));
+            tri!(self.end_object());
             Ok(Compound::Map {
                 ser: self,
                 state: State::Empty,
@@ -511,15 +553,10 @@ where
                 ref mut ser,
                 ref mut state,
             } => {
-                tri!(ser
-                    .formatter
-                    .begin_array_value(&mut ser.writer, *state == State::First)
-                    .map_err(Error::io));
+                tri!(ser.begin_array_value(*state == State::First));
                 *state = State::Rest;
                 tri!(value.serialize(&mut **ser));
-                ser.formatter
-                    .end_array_value(&mut ser.writer)
-                    .map_err(Error::io)
+                ser.end_array_value()
             }
             #[cfg(feature = "arbitrary_precision")]
             Compound::Number { .. } => unreachable!(),
@@ -534,7 +571,7 @@ where
             Compound::Map { ser, state } => {
                 match state {
                     State::Empty => {}
-                    _ => tri!(ser.formatter.end_array(&mut ser.writer).map_err(Error::io)),
+                    _ => tri!(ser.end_array()),
                 }
                 Ok(())
             }
@@ -612,13 +649,10 @@ where
             Compound::Map { ser, state } => {
                 match state {
                     State::Empty => {}
-                    _ => tri!(ser.formatter.end_array(&mut ser.writer).map_err(Error::io)),
+                    _ => tri!(ser.end_array()),
                 }
-                tri!(ser
-                    .formatter
-                    .end_object_value(&mut ser.writer)
-                    .map_err(Error::io));
-                tri!(ser.formatter.end_object(&mut ser.writer).map_err(Error::io));
+                tri!(ser.end_object_value());
+                tri!(ser.end_object());
                 Ok(())
             }
             #[cfg(feature = "arbitrary_precision")]
@@ -647,14 +681,12 @@ where
                 ref mut ser,
                 ref mut state,
             } => {
-                tri!(ser
-                    .formatter
-                    .begin_object_key_io(&mut ser.writer, *state == State::First));
+                tri!(ser.begin_object_key(*state == State::First));
                 *state = State::Rest;
 
                 tri!(key.serialize(MapKeySerializer { ser: *ser }));
 
-                ser.formatter.end_object_key_io(&mut ser.writer)
+                ser.end_object_key()
             }
             #[cfg(feature = "arbitrary_precision")]
             Compound::Number { .. } => unreachable!(),
@@ -670,9 +702,9 @@ where
     {
         match *self {
             Compound::Map { ref mut ser, .. } => {
-                tri!(ser.formatter.begin_object_value_io(&mut ser.writer));
+                tri!(ser.begin_object_value());
                 tri!(value.serialize(&mut **ser));
-                ser.formatter.end_object_value_io(&mut ser.writer)
+                ser.end_object_value()
             }
             #[cfg(feature = "arbitrary_precision")]
             Compound::Number { .. } => unreachable!(),
@@ -686,7 +718,7 @@ where
         match self {
             Compound::Map { ser, state } => match state {
                 State::Empty => Ok(()),
-                _ => ser.formatter.end_object(&mut ser.writer).map_err(Error::io),
+                _ => ser.end_object(),
             },
             #[cfg(feature = "arbitrary_precision")]
             Compound::Number { .. } => unreachable!(),
@@ -772,13 +804,10 @@ where
             Compound::Map { ser, state } => {
                 match state {
                     State::Empty => {}
-                    _ => tri!(ser.formatter.end_object(&mut ser.writer).map_err(Error::io)),
+                    _ => tri!(ser.end_object()),
                 }
-                tri!(ser
-                    .formatter
-                    .end_object_value(&mut ser.writer)
-                    .map_err(Error::io));
-                tri!(ser.formatter.end_object(&mut ser.writer).map_err(Error::io));
+                tri!(ser.end_object_value());
+                tri!(ser.end_object());
                 Ok(())
             }
             #[cfg(feature = "arbitrary_precision")]
@@ -1793,42 +1822,6 @@ pub trait Formatter {
         writer.write_all(fragment.as_bytes())
     }
 }
-
-trait FormatterExt: Formatter {
-    #[inline]
-    fn begin_object_key_io<W>(&mut self, writer: &mut W, first: bool) -> Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.begin_object_key(writer, first).map_err(Error::io)
-    }
-
-    #[inline]
-    fn end_object_key_io<W>(&mut self, writer: &mut W) -> Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.end_object_key(writer).map_err(Error::io)
-    }
-
-    #[inline]
-    fn begin_object_value_io<W>(&mut self, writer: &mut W) -> Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.begin_object_value(writer).map_err(Error::io)
-    }
-
-    #[inline]
-    fn end_object_value_io<W>(&mut self, writer: &mut W) -> Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.end_object_value(writer).map_err(Error::io)
-    }
-}
-
-impl<T> FormatterExt for T where T: Formatter {}
 
 /// This structure compacts a JSON value with no extra whitespace.
 #[derive(Clone, Debug)]
