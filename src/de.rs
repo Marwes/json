@@ -149,6 +149,12 @@ enum EnumResult<'a, R> {
     Error(Error),
 }
 
+enum OptionResult {
+    Some,
+    None,
+    Error(Error),
+}
+
 #[cfg(not(feature = "unbounded_depth"))]
 macro_rules! if_checking_recursion_limit {
     ($($body:tt)*) => {
@@ -434,14 +440,14 @@ impl<'de, R: Read<'de>> Deserializer<R> {
     }
 
     #[inline]
-    fn parse_option(&mut self) -> Result<Option<()>> {
-        match tri!(self.parse_whitespace()) {
+    fn parse_option(&mut self) -> OptionResult {
+        match try_with!(self.parse_whitespace(), OptionResult::Error) {
             Some(b'n') => {
                 self.eat_char();
-                tri!(self.parse_ident(b"ull"));
-                Ok(None)
+                try_with!(self.parse_ident(b"ull"), OptionResult::Error);
+                OptionResult::None
             }
-            _ => Ok(Some(())),
+            _ => OptionResult::Some,
         }
     }
 
@@ -1747,9 +1753,10 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
     where
         V: de::Visitor<'de>,
     {
-        match tri!(self.parse_option()) {
-            Some(()) => visitor.visit_some(self),
-            None => visitor.visit_none(),
+        match self.parse_option() {
+            OptionResult::Some => visitor.visit_some(self),
+            OptionResult::None => visitor.visit_none(),
+            OptionResult::Error(err) => Err(err),
         }
     }
 
