@@ -415,7 +415,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         }
     }
 
-    #[inline]
     fn parse_enum_prefix(&mut self) -> EnumResult<'_, R> {
         match try_with!(self.parse_whitespace_in_value(), EnumResult::Error) {
             b'{' => {
@@ -466,6 +465,7 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         self.parse_ident(b"ull")
     }
 
+    #[inline]
     fn parse_whitespace_until(&mut self, expected: u8, visitor: &dyn Expected) -> Result<()> {
         if tri!(self.parse_whitespace_in_value()) == expected {
             self.eat_char();
@@ -1621,6 +1621,7 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
         self.deserialize_str(visitor)
     }
 
+    #[inline]
     fn deserialize_str<V>(self, visitor: V) -> Result<V::Value>
     where
         V: de::Visitor<'de>,
@@ -1760,6 +1761,7 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
         }
     }
 
+    #[inline]
     fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value>
     where
         V: de::Visitor<'de>,
@@ -1849,6 +1851,7 @@ impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
         }
     }
 
+    #[inline]
     fn deserialize_struct<V>(
         self,
         _name: &'static str,
@@ -1966,6 +1969,7 @@ impl<'de, 'a, R: Read<'de> + 'a> SeqAccess<'a, R> {
 impl<'de, 'a, R: Read<'de> + 'a> de::SeqAccess<'de> for SeqAccess<'a, R> {
     type Error = Error;
 
+    #[inline]
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>>
     where
         T: de::DeserializeSeed<'de>,
@@ -2028,6 +2032,7 @@ impl<'de, 'a, R: Read<'de> + 'a> MapAccess<'a, R> {
 impl<'de, 'a, R: Read<'de> + 'a> de::MapAccess<'de> for MapAccess<'a, R> {
     type Error = Error;
 
+    #[inline]
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>>
     where
         K: de::DeserializeSeed<'de>,
@@ -2039,6 +2044,7 @@ impl<'de, 'a, R: Read<'de> + 'a> de::MapAccess<'de> for MapAccess<'a, R> {
         })
     }
 
+    #[inline]
     fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value>
     where
         V: de::DeserializeSeed<'de>,
