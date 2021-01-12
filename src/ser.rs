@@ -4,7 +4,7 @@ use crate::error::{Error, ErrorCode, Result};
 use crate::io;
 use crate::lib::num::FpCategory;
 use crate::lib::*;
-use serde::ser::{self, Impossible, Serialize, Serializer as _};
+use serde::ser::{self, Impossible, Serialize, Serializer as SerdeSerializer};
 use serde::serde_if_integer128;
 
 /// A structure for serializing Rust values into JSON.
